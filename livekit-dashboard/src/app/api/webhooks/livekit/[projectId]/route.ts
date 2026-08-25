@@ -1,0 +1,37 @@
+import { jsonError, jsonOk } from "@/lib/http";
+import { ingestLiveKitWebhook, isBrowserForgedWebhook } from "@/lib/events/ingest";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+type RouteContext = {
+  params: Promise<{ projectId: string }>;
+};
+
+export async function POST(request: Request, context: RouteContext) {
+  if (isBrowserForgedWebhook(request)) {
+    return jsonError("Forbidden", 403, "FORBIDDEN");
+  }
+
+  if (!rateLimit(`webhook:${clientIp(request)}`)) {
+    return jsonError("Too many webhook requests", 429, "RATE_LIMITED");
+  }
+
+  const { projectId } = await context.params;
+  const body = await request.text();
+  const authHeader = request.headers.get("Authorization") ?? request.headers.get("Authorize");
+
+  try {
+    const result = await ingestLiveKitWebhook({
+      body,
+      authHeader,
+      projectId,
+    });
+    return jsonOk({ ok: true, ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "invalid webhook";
+    console.error("[webhook]", projectId, message);
+    return jsonError("invalid webhook", 400, "INVALID_WEBHOOK");
+  }
+}

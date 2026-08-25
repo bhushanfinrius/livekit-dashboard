@@ -1,0 +1,14 @@
+# Self-hosted Deck deploy. Env vars from Agents → Deploy override these.
+# Do not put LIVEKIT_API_SECRET here — Deck injects it at runtime.
+
+[agent]
+name = "my-agent"
+
+[models]
+# livekit-inference requires LiveKit Cloud. google uses GOOGLE_API_KEY.
+provider = "google"
+llm = "gemini-2.5-flash"
+
+[audio]
+# ai_coustics / BVC need LiveKit Cloud. Leave off for local Docker LiveKit.
+noise_cancellation = false

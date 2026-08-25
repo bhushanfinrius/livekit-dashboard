@@ -1,0 +1,28 @@
+# Secrets — never commit keys or service-account JSON
+.env
+.env.*
+!.env.example
+!.env*.example
+*.pem
+solvoxai.json
+livekit-storage.json
+**/.agent.runtime.env
+**/docker-compose.agent.yml
+
+# Dependencies and build output
+node_modules/
+.next/
+out/
+build/
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+coverage/
+next-tmp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/

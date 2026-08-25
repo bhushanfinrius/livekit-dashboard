@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+.env
+.env*.local
+npm-debug.log*
+Dockerfile
+.dockerignore
+docker-compose*.yml
+.agent.runtime.env
+.agent.compose.yml

@@ -31,7 +31,7 @@ export function liveKitErrorMessage(error: unknown) {
     return "Could not reach the LiveKit server at that URL. Run `npm run docker:up` and use http://127.0.0.1:7880.";
   }
   if (/unauthorized|invalid|jwt|permission|403|401/i.test(message)) {
-    return "LiveKit rejected these credentials. Local compose uses API key `devkey` and a 32-character secret (see livekit.yaml).";
+    return "LiveKit rejected these credentials. Use the API key and secret from livekit.yaml (the onboarding form loads them). Do not generate a new pair inside the Deck Docker container.";
   }
   if (/not found|does not exist|no such/i.test(message)) {
     return "That room or participant is no longer on the LiveKit server.";

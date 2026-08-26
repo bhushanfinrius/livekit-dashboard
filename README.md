@@ -9,13 +9,27 @@ Self-hosted LiveKit **console** and a **Python agent** worker that talks to it.
 
 ## Start Deck (UI + LiveKit)
 
+You only need Docker Desktop. Run these from the **inner** `livekit-dashboard` folder:
+
 ```bash
 cd livekit-dashboard
 cp .env.example .env
 docker compose up -d --build postgres redis livekit sip egress deck
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Guide: [livekit-dashboard/docs/DEPLOY.md](livekit-dashboard/docs/DEPLOY.md).
+Windows PowerShell:
+
+```powershell
+cd livekit-dashboard
+Copy-Item .env.example .env
+docker compose up -d --build postgres redis livekit sip egress deck
+```
+
+Generate `AUTH_SECRET` / `ENCRYPTION_KEY` with the commands in `livekit-dashboard/.env.example` (optional for a laptop demo).
+
+Open [http://localhost:3000](http://localhost:3000). Create an account, then create a project with the **pre-filled** keys from `livekit.yaml`. Do not Generate a new LiveKit key pair while Deck runs in Docker.
+
+Guide: [livekit-dashboard/docs/DEPLOY.md](livekit-dashboard/docs/DEPLOY.md).
 
 ## Connect an agent
 

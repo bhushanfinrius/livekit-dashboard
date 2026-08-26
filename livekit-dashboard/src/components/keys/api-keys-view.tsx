@@ -142,9 +142,10 @@ export function ApiKeysView({
       ) : null}
       {canManage ? (
         <p className="text-xs text-muted-foreground">
-          Create key writes a new pair into <span className="font-mono">livekit.yaml</span>, restarts
-          local LiveKit, and stores it on this project. Owners can copy the secret anytime — it is
-          not discarded after the dialog closes.
+          Create key writes a new pair into <span className="font-mono">livekit.yaml</span> and
+          restarts local LiveKit. That only works when Deck runs on the host (
+          <span className="font-mono">npm run dev</span>), not inside the{" "}
+          <span className="font-mono">deck</span> container. Owners can copy the secret anytime.
         </p>
       ) : (
         <Badge variant="outline">Only owners can copy the secret</Badge>

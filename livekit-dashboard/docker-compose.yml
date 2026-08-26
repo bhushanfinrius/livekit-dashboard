@@ -107,8 +107,15 @@ services:
     environment:
       DATABASE_URL: postgresql://deck:deck@postgres:5432/deck
       AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:-deck-dev-secret-replace-before-production-use-32b}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-deck-dev-encryption-key-replace-before-prod32}
+      # Server-side SDK calls the Compose service. The browser still uses 127.0.0.1:7880.
+      LIVEKIT_INTERNAL_URL: http://livekit:7880
+      DECK_IN_COMPOSE: "1"
       HOSTNAME: 0.0.0.0
       PORT: "3000"
+    volumes:
+      - ./livekit.yaml:/app/livekit.yaml:ro
     ports:
       - "3000:3000"
     extra_hosts:

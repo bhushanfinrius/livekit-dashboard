@@ -33,7 +33,7 @@ import {
   isEncryptedSecret,
 } from "@/lib/crypto/secret";
 import { ProjectAccessError } from "@/lib/livekit/errors";
-import { clientLivekitWsUrl, toHttpLivekitUrl, toWsLivekitUrl } from "@/lib/livekit/url";
+import { clientLivekitWsUrl, serverLivekitUrl, toHttpLivekitUrl, toWsLivekitUrl } from "@/lib/livekit/url";
 
 const VERIFY_ATTEMPTS = 4;
 const VERIFY_RETRY_MS = 750;
@@ -157,7 +157,7 @@ export type ProjectLiveKit = {
 };
 
 function createSdkClients(credentials: LiveKitCredentials) {
-  const host = toHttpLivekitUrl(credentials.livekitUrl);
+  const host = serverLivekitUrl(credentials.livekitUrl);
   const { livekitApiKey, livekitApiSecret } = credentials;
   return {
     host,
@@ -180,7 +180,7 @@ function wrapClients(
   return {
     projectId,
     name,
-    livekitUrl: sdk.host,
+    livekitUrl: toHttpLivekitUrl(credentials.livekitUrl),
     publicLivekitUrl,
     clientWsUrl: clientLivekitWsUrl({
       livekitUrl: credentials.livekitUrl,

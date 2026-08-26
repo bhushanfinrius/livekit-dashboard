@@ -34,6 +34,20 @@ export function isLoopbackLivekitUrl(url: string) {
   }
 }
 
+/**
+ * Deck-in-Compose cannot reach LiveKit at 127.0.0.1 (that is the UI container).
+ * Set LIVEKIT_INTERNAL_URL=http://livekit:7880 so server SDKs use the service name.
+ * Browser Talk still uses the project URL (127.0.0.1:7880 on the host).
+ */
+export function serverLivekitUrl(url: string) {
+  const http = toHttpLivekitUrl(url);
+  const internal = process.env.LIVEKIT_INTERNAL_URL?.trim();
+  if (internal && isLoopbackLivekitUrl(http)) {
+    return toHttpLivekitUrl(internal);
+  }
+  return http;
+}
+
 export function livekitCliProjectAdd(input: {
   projectName: string;
   wsUrl: string;

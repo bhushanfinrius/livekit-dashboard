@@ -22,6 +22,7 @@ export {
   clientLivekitWsUrl,
   isLoopbackLivekitUrl,
   livekitCliProjectAdd,
+  serverLivekitUrl,
   toHttpLivekitUrl,
   toWsLivekitUrl,
 } from "@/lib/livekit/url";

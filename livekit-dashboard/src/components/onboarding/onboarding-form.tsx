@@ -23,6 +23,7 @@ type LocalKeys = {
   url: string;
   apiKey: string;
   apiSecret: string;
+  canRotate?: boolean;
 };
 
 export function OnboardingForm() {
@@ -36,6 +37,7 @@ export function OnboardingForm() {
   const [livekitApiKey, setLivekitApiKey] = useState<string>(LOCAL_LIVEKIT.apiKey);
   const [livekitApiSecret, setLivekitApiSecret] = useState<string>(LOCAL_LIVEKIT.apiSecret);
   const [revealKeys, setRevealKeys] = useState(false);
+  const [canRotate, setCanRotate] = useState(false);
 
   useEffect(() => {
     void apiJson<LocalKeys>("/api/livekit/local-keys")
@@ -43,6 +45,7 @@ export function OnboardingForm() {
         setLivekitUrl(keys.url);
         setLivekitApiKey(keys.apiKey);
         setLivekitApiSecret(keys.apiSecret);
+        setCanRotate(keys.canRotate === true);
       })
       .catch(() => {});
   }, []);
@@ -89,7 +92,14 @@ export function OnboardingForm() {
       }),
     });
 
-    const payload = (await response.json()) as CreatedProject & { error?: string };
+    let payload: CreatedProject & { error?: string };
+    try {
+      payload = (await response.json()) as CreatedProject & { error?: string };
+    } catch {
+      setError("Could not create project (server did not return JSON). Check LiveKit and Deck logs.");
+      setPending(null);
+      return;
+    }
     if (!response.ok) {
       setError(payload.error ?? "Could not create project");
       setPending(null);
@@ -199,30 +209,43 @@ export function OnboardingForm() {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Generate writes the pair into <span className="font-mono">livekit.yaml</span> and{" "}
-              <span className="font-mono">sip.yaml</span>, then restarts the local LiveKit
-              containers. You do not paste keys by hand.
+              {canRotate ? (
+                <>
+                  Keys are loaded from <span className="font-mono">livekit.yaml</span>. Create
+                  the project with those values. Generate is optional: it rewrites YAML and
+                  restarts local LiveKit (host Deck only).
+                </>
+              ) : (
+                <>
+                  Docker already loaded keys from <span className="font-mono">livekit.yaml</span>.
+                  Leave the fields as they are and click Create. Do not type a new key —
+                  LiveKit will reject it until the YAML files and containers are updated on the
+                  host.
+                </>
+              )}
             </p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={pending !== null}
-                onClick={() => void applyKeys("defaults")}
-              >
-                {pending === "keys" ? "Applying…" : "Fill Docker defaults"}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={pending !== null}
-                onClick={() => void applyKeys("generate")}
-              >
-                {pending === "keys" ? "Applying…" : "Generate key pair"}
-              </Button>
-            </div>
+            {canRotate ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={pending !== null}
+                  onClick={() => void applyKeys("defaults")}
+                >
+                  {pending === "keys" ? "Applying…" : "Fill Docker defaults"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={pending !== null}
+                  onClick={() => void applyKeys("generate")}
+                >
+                  {pending === "keys" ? "Applying…" : "Generate key pair"}
+                </Button>
+              </div>
+            ) : null}
           </div>
           <div className="space-y-2">
             <Label htmlFor="livekitUrl">LiveKit URL</Label>

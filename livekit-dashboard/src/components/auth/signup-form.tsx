@@ -29,7 +29,16 @@ export function SignupForm() {
       body: JSON.stringify({ name: name || undefined, email, password }),
     });
 
-    const payload = (await response.json()) as { error?: string };
+    let payload: { error?: string } = {};
+    try {
+      payload = (await response.json()) as { error?: string };
+    } catch {
+      setError(
+        "Could not create account (server did not return JSON). Check `docker compose logs deck`.",
+      );
+      setPending(false);
+      return;
+    }
     if (!response.ok) {
       setError(payload.error ?? "Could not create account");
       setPending(false);

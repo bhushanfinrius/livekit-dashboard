@@ -7,7 +7,7 @@ import {
 } from "@/lib/docker/compose";
 import { syncAgentWorkerKeys } from "@/lib/livekit/agent-worker";
 import { generateLiveKitKeyPair } from "@/lib/livekit/keys";
-import { LOCAL_LIVEKIT } from "@/lib/livekit/local-defaults";
+import { deckRunsInCompose, LOCAL_LIVEKIT } from "@/lib/livekit/local-defaults";
 import { verifyLiveKitCredentials } from "@/lib/livekit/service";
 
 const LIVEKIT_YAML = "livekit.yaml";
@@ -19,26 +19,31 @@ export type LocalLiveKitKeys = {
   url: string;
   apiKey: string;
   apiSecret: string;
+  canRotate: boolean;
 };
 
 function quoteYaml(value: string) {
   return JSON.stringify(value);
 }
 
+export function normalizeYamlNewlines(content: string) {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export function withLiveKitServerKeys(content: string, apiKey: string, apiSecret: string) {
-  let next = content.replace(
-    /keys:\n(?:[ \t].*\n)*/,
-    `keys:\n  # LiveKit 1.13+ requires API secrets >= 32 characters\n  ${apiKey}: ${quoteYaml(apiSecret)}\n`,
-  );
-  if (!/^keys:/m.test(next)) {
-    next += `\nkeys:\n  ${apiKey}: ${quoteYaml(apiSecret)}\n`;
+  let next = normalizeYamlNewlines(content);
+  const block = `keys:\n  # LiveKit 1.13+ requires API secrets >= 32 characters\n  ${apiKey}: ${quoteYaml(apiSecret)}\n`;
+  if (/^keys:/m.test(next)) {
+    next = next.replace(/keys:\n(?:[ \t].*\n)*/, block);
+  } else {
+    next += `\n${block}`;
   }
   next = next.replace(/(webhook:\n[ \t]+api_key:\s*)\S+/, `$1${apiKey}`);
   return next;
 }
 
 export function withSipKeys(content: string, apiKey: string, apiSecret: string) {
-  return content
+  return normalizeYamlNewlines(content)
     .replace(/^api_key:\s*.+$/m, `api_key: ${apiKey}`)
     .replace(/^api_secret:\s*.+$/m, `api_secret: ${quoteYaml(apiSecret)}`);
 }
@@ -63,18 +68,29 @@ function unquoteYaml(value: string) {
 }
 
 export function readKeysFromLiveKitYaml(content: string): { apiKey: string; apiSecret: string } | null {
-  const match = content.match(/^keys:\n(?:[ \t]+#[^\n]*\n)*[ \t]+([^:\s#][^:]*):\s*(.+)$/m);
+  const normalized = normalizeYamlNewlines(content);
+  const match = normalized.match(/^keys:\n(?:[ \t]+#[^\n]*\n)*[ \t]+([^:\s#][^:]*):\s*(.+)$/m);
   if (!match) return null;
   return { apiKey: match[1].trim(), apiSecret: unquoteYaml(match[2]) };
 }
 
+export function canRotateLocalLiveKitKeys() {
+  return !deckRunsInCompose();
+}
+
 export function readLocalLiveKitKeys(): LocalLiveKitKeys {
   const file = path.join(repoRoot(), LIVEKIT_YAML);
-  const parsed = readKeysFromLiveKitYaml(readFileSync(file, "utf8"));
+  let parsed: { apiKey: string; apiSecret: string } | null = null;
+  try {
+    parsed = readKeysFromLiveKitYaml(readFileSync(file, "utf8"));
+  } catch {
+    parsed = null;
+  }
   return {
     url: LOCAL_LIVEKIT.url,
     apiKey: parsed?.apiKey ?? LOCAL_LIVEKIT.apiKey,
     apiSecret: parsed?.apiSecret ?? LOCAL_LIVEKIT.apiSecret,
+    canRotate: canRotateLocalLiveKitKeys(),
   };
 }
 
@@ -118,7 +134,14 @@ async function waitUntilReady(keys: LocalLiveKitKeys) {
     : new Error("LiveKit did not accept the new keys after restart");
 }
 
+const COMPOSE_ROTATE_ERROR =
+  "Key rotation is not available inside the Deck container. Use the API key and secret already shown (from livekit.yaml), then Create and connect. To generate a new pair, run Deck on the host with npm run dev.";
+
 export async function applyLocalLiveKitKeys(mode: "generate" | "defaults"): Promise<LocalLiveKitKeys> {
+  if (!canRotateLocalLiveKitKeys()) {
+    throw new Error(COMPOSE_ROTATE_ERROR);
+  }
+
   const pair =
     mode === "defaults"
       ? { apiKey: LOCAL_LIVEKIT.apiKey, apiSecret: LOCAL_LIVEKIT.apiSecret }
@@ -127,6 +150,7 @@ export async function applyLocalLiveKitKeys(mode: "generate" | "defaults"): Prom
     url: LOCAL_LIVEKIT.url,
     apiKey: pair.apiKey,
     apiSecret: pair.apiSecret,
+    canRotate: true,
   };
 
   assertNoForeignLiveKitPort();

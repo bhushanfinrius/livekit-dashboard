@@ -2,19 +2,21 @@
 
 Operations console for **your** LiveKit server: rooms, agents, Talk, sessions, recordings, SIP, egress, and webhooks. It is not LiveKit Cloud.
 
-## Quick start (one command)
+## Quick start (Docker only)
 
-Docker Compose starts the UI **and** LiveKit (Postgres, Redis, SIP, egress):
+From **this folder** (`livekit-dashboard/livekit-dashboard`, not the repo root):
 
 ```bash
 cp .env.example .env
+# Optional: generate AUTH_SECRET and ENCRYPTION_KEY (see .env.example)
 docker compose up -d --build postgres redis livekit sip egress deck
-# or: npm run docker:stack
 ```
 
-Open [http://localhost:3000](http://localhost:3000), create an account, create a project, click **Generate key pair**.
+Windows PowerShell: `Copy-Item .env.example .env` then the same `docker compose` command.
 
-Full steps, ports, GCS, and production notes: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Open [http://localhost:3000](http://localhost:3000), create an account, create a project. **Keep the pre-filled LiveKit keys** (from `livekit.yaml`). Do not Generate a new pair inside Docker.
+
+Full steps, ports, troubleshooting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 Connect a Python worker: **[docs/AGENT_STARTER.md](docs/AGENT_STARTER.md)**.
 
@@ -65,7 +67,7 @@ npm run dev
 ## Auth
 
 - Email/password (bcrypt). Optional GitHub/Google when `AUTH_*` env vars are set.
-- Replace `AUTH_SECRET` and `ENCRYPTION_KEY` before a real deployment.
+- Replace `AUTH_SECRET` and `ENCRYPTION_KEY` before a real deployment (commands in `.env.example`).
 - LiveKit API secrets are stored encrypted (`lk1:`) and never sent to the browser.
 
 ## Webhooks

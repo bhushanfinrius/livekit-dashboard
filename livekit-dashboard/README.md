@@ -1,6 +1,6 @@
-# Deck — self-hosted LiveKit console
+# LumiVoice — self-hosted LiveKit console
 
-Operations console for **your** LiveKit server: rooms, agents, Talk, sessions, recordings, SIP, egress, and webhooks. It is not LiveKit Cloud.
+**LumiVoice** is the voice AI operations console for your own LiveKit server: rooms, agents, Talk, sessions, recordings, SIP, egress, and webhooks. It is not LiveKit Cloud.
 
 ## Quick start (Docker only)
 
@@ -16,9 +16,11 @@ Windows PowerShell: `Copy-Item .env.example .env` then the same `docker compose`
 
 Open [http://localhost:3000](http://localhost:3000), create an account, create a project. **Keep the pre-filled LiveKit keys** (from `livekit.yaml`). Do not Generate a new pair inside Docker.
 
-Full steps, ports, troubleshooting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
-
-Connect a Python worker: **[docs/AGENT_STARTER.md](docs/AGENT_STARTER.md)**.
+| Guide | Purpose |
+|-------|---------|
+| **[docs/DEPLOY.md](docs/DEPLOY.md)** | Local / laptop setup |
+| **[docs/VPS-DEPLOY.md](docs/VPS-DEPLOY.md)** | Production VPS (HTTPS, public IP) |
+| **[docs/AGENT_STARTER.md](docs/AGENT_STARTER.md)** | Python voice agents |
 
 ## What you get
 
@@ -44,25 +46,24 @@ npx prisma generate
 npm run dev
 ```
 
-`npm run dev` starts Postgres, Redis, LiveKit, SIP, and egress first (`docker:up`). It does **not** start the `deck` container (port 3000 would clash). If something else already owns **7880**, this repo skips LiveKit so the UI can still start.
+`npm run dev` starts Postgres, Redis, LiveKit, SIP, and egress first (`docker:up`). It does **not** start the `deck` container (port 3000 would clash).
 
 ## Stack
 
 - Next.js 15 (App Router) + Auth.js v5
 - PostgreSQL + Prisma (host port **5433**)
-- Docker Compose: LiveKit, Redis, SIP, egress, optional agent, optional Deck UI
+- Docker Compose: LiveKit, Redis, SIP, egress, optional agent, LumiVoice UI (`deck` service)
 - Recordings: `livekit-egress` → GCS (`GCS_BUCKET_NAME` + credentials)
 
 ## Scripts
 
 | Script | Purpose |
 |---|---|
-| `npm run docker:stack` | Build/start UI + LiveKit stack (no agent) |
+| `npm run docker:stack` | Build/start LumiVoice + LiveKit stack (no agent) |
 | `npm run docker:up` | Infra only, for `npm run dev` |
 | `npm run dev` | Next.js on the host (Turbopack) |
 | `npm run build` / `npm start` | Production build on the host |
 | `npm test` | Vitest |
-| `npm run db:migrate` | `prisma migrate dev` |
 
 ## Auth
 
@@ -77,4 +78,4 @@ Compose posts to both:
 - `http://host.docker.internal:3000/api/webhooks/livekit`
 - `http://deck:3000/api/webhooks/livekit`
 
-**Events → Last received** staying on `never` means LiveKit is not reaching Deck. Recreate LiveKit after editing `livekit.yaml`.
+**Events → Last received** staying on `never` means LiveKit is not reaching LumiVoice. Recreate LiveKit after editing `livekit.yaml`.

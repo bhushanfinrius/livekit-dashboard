@@ -44,7 +44,7 @@ export function buildAgentDeployGuide(input: {
     `LIVEKIT_API_SECRET=${secret}`,
     `AGENT_NAME=${agentName}`,
     "# Keep STT / TTS / LLM / realtime keys in this file.",
-    "# Deck Deploy copies the whole .env.local, then overlays LiveKit URL/key/secret.",
+    "# LumiVoice Deploy copies the whole .env.local, then overlays LiveKit URL/key/secret.",
     "AGENT_ENTRYPOINT=src/agent.py",
   ].join("\n");
 

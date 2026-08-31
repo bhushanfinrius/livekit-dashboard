@@ -143,7 +143,7 @@ export function EgressIngressView({
       <p className="text-sm text-muted-foreground">
         Same APIs as <span className="font-mono">lk egress</span> /{" "}
         <span className="font-mono">lk ingress</span>. Listing and stop talk to
-        livekit-server. Deck starts an audio recording for every Talk, SIP, and
+        livekit-server. LumiVoice starts an audio recording for every Talk, SIP, and
         joined room. The <span className="font-mono">livekit-egress</span> worker
         must be running and GCS credentials must be set.
       </p>
@@ -182,7 +182,7 @@ export function EgressIngressView({
           <JobTable
             title="Active egress"
             emptyTitle="No active egress jobs"
-            emptyDescription="Deck starts a recording when a room starts. If this stays empty, livekit-egress is down or GCS credentials are missing."
+            emptyDescription="LumiVoice starts a recording when a room starts. If this stays empty, livekit-egress is down or GCS credentials are missing."
             jobs={egress.active}
             pendingId={pendingId}
             onStop={setStopTarget}

@@ -107,7 +107,7 @@ export function DeployCommands({
           <p className="text-sm text-muted-foreground">
             Same image on Docker (uses <span className="font-mono">{guide.dockerWsUrl}</span>):
           </p>
-          <CopyField label="From the Deck repo" value={guide.dockerDeploy} />
+          <CopyField label="From the LumiVoice repo" value={guide.dockerDeploy} />
         </Step>
 
         <Step n={4} title="Join a room by agent name">

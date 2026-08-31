@@ -134,7 +134,7 @@ export function ApiKeysView({
         <div className="space-y-3 rounded-lg border border-border bg-card p-4">
           <p className="text-sm font-medium">Current credentials</p>
           <p className="text-xs text-muted-foreground">
-            Unlike LiveKit Cloud, Deck keeps the secret for owners so you can copy it again.
+            Unlike LiveKit Cloud, LumiVoice keeps the secret for owners so you can copy it again.
           </p>
           <CopyField label="API key" value={keys[0].apiKey} />
           <CopyField label="API secret" value={keys[0].apiSecret} secret defaultVisible />
@@ -143,7 +143,7 @@ export function ApiKeysView({
       {canManage ? (
         <p className="text-xs text-muted-foreground">
           Create key writes a new pair into <span className="font-mono">livekit.yaml</span> and
-          restarts local LiveKit. That only works when Deck runs on the host (
+          restarts local LiveKit. That only works when LumiVoice runs on the host (
           <span className="font-mono">npm run dev</span>), not inside the{" "}
           <span className="font-mono">deck</span> container. Owners can copy the secret anytime.
         </p>

@@ -42,7 +42,7 @@ export async function POST(request: Request, context: RouteContext) {
   });
   if (!user) {
     return jsonError(
-      "No Deck account with that email. They can sign up, then join with the project code.",
+      "No LumiVoice account with that email. They can sign up, then join with the project code.",
       404,
       "NOT_FOUND",
     );

@@ -50,7 +50,7 @@ export default async function SessionDetailPage({
     return (
       <EmptyState
         title="Session not found"
-        description="Deck only reconstructs sessions from the last 30 days of stored webhooks."
+        description="LumiVoice only reconstructs sessions from the last 30 days of stored webhooks."
       />
     );
   }

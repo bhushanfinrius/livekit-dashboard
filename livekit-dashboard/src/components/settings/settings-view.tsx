@@ -156,7 +156,7 @@ export function SettingsView({
         <h2 className="text-sm font-medium">Use with CLI</h2>
         <p className="mt-1 mb-4 text-sm text-muted-foreground">
           Same keys as this project. Paste the API secret from project create or the API keys page —
-          Deck does not reveal stored secrets here.
+          LumiVoice does not reveal stored secrets here.
         </p>
         <CopyField
           label="lk project add"
@@ -172,7 +172,7 @@ export function SettingsView({
       <section className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-sm font-medium">LiveKit webhook</h2>
         <p className="mt-1 mb-4 text-sm text-muted-foreground">
-          LiveKit signs posts with your API secret. Deck verifies them and stores the event log.
+          LiveKit signs posts with your API secret. LumiVoice verifies them and stores the event log.
         </p>
         <WebhookUrls projectId={projectId} />
       </section>
@@ -180,7 +180,7 @@ export function SettingsView({
       <section className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-sm font-medium">Team</h2>
         <p className="mt-1 mb-4 text-sm text-muted-foreground">
-          Invite someone who already has a Deck account. New users can sign up, then join with the
+          Invite someone who already has a LumiVoice account. New users can sign up, then join with the
           code above.
         </p>
         {isOwner ? (

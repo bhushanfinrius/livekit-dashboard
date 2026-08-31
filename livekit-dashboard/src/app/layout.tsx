@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { Providers } from "@/components/providers";
+import { PRODUCT_NAME, PRODUCT_TAGLINE } from "@/lib/brand";
 import "./globals.css";
 
 const inter = Inter({
@@ -21,10 +22,10 @@ const spaceGrotesk = Space_Grotesk({
 
 export const metadata: Metadata = {
   title: {
-    default: "Deck",
-    template: "%s · Deck",
+    default: PRODUCT_NAME,
+    template: `%s · ${PRODUCT_NAME}`,
   },
-  description: "Operations console for self-hosted LiveKit",
+  description: PRODUCT_TAGLINE,
 };
 
 export default function RootLayout({

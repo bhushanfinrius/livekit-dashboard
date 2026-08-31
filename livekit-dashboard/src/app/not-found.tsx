@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { PRODUCT_NAME } from "@/lib/brand";
 
 export default function NotFound() {
   return (
@@ -10,7 +11,7 @@ export default function NotFound() {
         That route is not in this console. Open a project from the home page.
       </p>
       <Button asChild className="mt-6">
-        <Link href="/">Back to Deck</Link>
+        <Link href="/">Back to {PRODUCT_NAME}</Link>
       </Button>
     </div>
   );

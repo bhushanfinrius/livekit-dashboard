@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { PRODUCT_NAME } from "@/lib/brand";
 
 export function AuthShell({
   title,
@@ -20,7 +21,7 @@ export function AuthShell({
           <span className="text-live" aria-hidden>
             ◈
           </span>
-          Deck
+          {PRODUCT_NAME}
         </Link>
       </header>
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-6 py-12">

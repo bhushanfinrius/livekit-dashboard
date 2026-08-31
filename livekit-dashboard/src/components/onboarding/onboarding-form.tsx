@@ -96,7 +96,7 @@ export function OnboardingForm() {
     try {
       payload = (await response.json()) as CreatedProject & { error?: string };
     } catch {
-      setError("Could not create project (server did not return JSON). Check LiveKit and Deck logs.");
+      setError("Could not create project (server did not return JSON). Check LiveKit and LumiVoice logs.");
       setPending(null);
       return;
     }
@@ -213,7 +213,7 @@ export function OnboardingForm() {
                 <>
                   Keys are loaded from <span className="font-mono">livekit.yaml</span>. Create
                   the project with those values. Generate is optional: it rewrites YAML and
-                  restarts local LiveKit (host Deck only).
+                  restarts local LiveKit (host UI only).
                 </>
               ) : (
                 <>

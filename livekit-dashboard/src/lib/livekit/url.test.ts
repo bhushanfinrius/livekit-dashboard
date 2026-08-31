@@ -77,12 +77,12 @@ describe("livekitCliProjectAdd", () => {
   it("builds a copyable lk project add command", () => {
     expect(
       livekitCliProjectAdd({
-        projectName: "Deck Local",
+        projectName: "LumiVoice Local",
         wsUrl: toWsLivekitUrl("http://127.0.0.1:7880"),
         apiKey: "deck_key",
       }),
     ).toBe(
-      "lk project add deck-local --url ws://127.0.0.1:7880 --api-key deck_key --api-secret <paste from API keys>",
+      "lk project add lumivoice-local --url ws://127.0.0.1:7880 --api-key deck_key --api-secret <paste from API keys>",
     );
   });
 });
@@ -127,13 +127,13 @@ describe("canRotateLocalLiveKitKeys", () => {
     expect(canRotateLocalLiveKitKeys()).toBe(true);
   });
 
-  it("is false inside the Deck Compose service", () => {
+  it("is false inside the LumiVoice Compose service", () => {
     process.env.DECK_IN_COMPOSE = "1";
     expect(canRotateLocalLiveKitKeys()).toBe(false);
   });
 
-  it("does not write new keys from the Deck container", async () => {
+  it("does not write new keys from the LumiVoice container", async () => {
     process.env.DECK_IN_COMPOSE = "1";
-    await expect(applyLocalLiveKitKeys("generate")).rejects.toThrow(/Deck container/);
+    await expect(applyLocalLiveKitKeys("generate")).rejects.toThrow(/LumiVoice container/);
   });
 });

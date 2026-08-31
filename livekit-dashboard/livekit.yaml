@@ -3,8 +3,20 @@ rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50100
-  # Local compose: don't wait on public STUN. Set true only on a real host NIC.
+  # Laptop/Docker Desktop: false. India VPS / public NIC: true (see livekit.vps.example.yaml).
   use_external_ip: false
+  # Optional: pin STUN when behind unusual NAT. Defaults are fine for most VPS.
+  # stun_servers:
+  #   - stun.l.google.com:19302
+
+# Built-in TURN (Cloud-like NAT traversal). Keep disabled on laptop.
+# On VPS: set enabled: true, domain to public IP or hostname, open UDP/TCP 3478.
+# Full example: livekit.vps.example.yaml + docker compose -f docker-compose.yml -f docker-compose.vps.yml
+turn:
+  enabled: false
+  domain: localhost
+  udp_port: 3478
+  # tls_port: 5349
 
 redis:
   address: redis:6379
@@ -16,7 +28,7 @@ keys:
 webhook:
   api_key: deck_bcce7fdea121fc22
   urls:
-    # Host Deck (`npm run dev`) and Compose Deck (`docker compose up deck`).
+    # Host LumiVoice (`npm run dev`) and Compose UI (`docker compose up deck`).
     # Recreate the livekit container after changing these URLs.
     - http://host.docker.internal:3000/api/webhooks/livekit
     - http://deck:3000/api/webhooks/livekit

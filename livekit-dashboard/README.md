@@ -19,7 +19,8 @@ Open [http://localhost:3000](http://localhost:3000), create an account, create a
 | Guide | Purpose |
 |-------|---------|
 | **[docs/DEPLOY.md](docs/DEPLOY.md)** | Local / laptop setup |
-| **[docs/VPS-DEPLOY.md](docs/VPS-DEPLOY.md)** | Production VPS (HTTPS, public IP) |
+| **[docs/VPS-DEPLOY.md](docs/VPS-DEPLOY.md)** | Production VPS (HTTPS, TURN, public IP) |
+| **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** | India latency — nearest to / surpass Cloud |
 | **[docs/AGENT_STARTER.md](docs/AGENT_STARTER.md)** | Python voice agents |
 
 ## What you get

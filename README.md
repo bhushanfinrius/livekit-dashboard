@@ -33,6 +33,7 @@ Open [http://localhost:3000](http://localhost:3000). Create an account, then cre
 |-------|---------|
 | [livekit-dashboard/docs/DEPLOY.md](livekit-dashboard/docs/DEPLOY.md) | Local setup |
 | [livekit-dashboard/docs/VPS-DEPLOY.md](livekit-dashboard/docs/VPS-DEPLOY.md) | **Production VPS** |
+| [livekit-dashboard/docs/PERFORMANCE.md](livekit-dashboard/docs/PERFORMANCE.md) | **India performance vs Cloud** |
 | [livekit-dashboard/docs/AGENT_STARTER.md](livekit-dashboard/docs/AGENT_STARTER.md) | Connect agents |
 
 ## Connect an agent

@@ -33,7 +33,7 @@ export function CreatedKeysDialog({
           Copy your API secret
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Cloud-style: the secret is shown here so you can copy it. In Deck, owners can also
+          Cloud-style: the secret is shown here so you can copy it. In LumiVoice, owners can also
           copy it later from API keys — it is not discarded.
         </p>
         <div className="mt-4 space-y-3">

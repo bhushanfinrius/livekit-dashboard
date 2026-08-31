@@ -84,7 +84,7 @@ export function WorkerPanel({
           <h2 className="text-sm font-medium">Worker</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Put STT/TTS/LLM or realtime keys in the starter{" "}
-            <span className="font-mono">.env.local</span>, then deploy. Deck copies that whole
+            <span className="font-mono">.env.local</span>, then deploy. LumiVoice copies that whole
             file and overlays this project&apos;s LiveKit URL, API key, and secret.
           </p>
         </div>

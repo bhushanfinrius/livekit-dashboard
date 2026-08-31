@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
+import { PRODUCT_NAME } from "@/lib/brand";
 import { getUserMemberships } from "@/lib/projects";
 
 export default async function HomePage() {
@@ -21,7 +22,7 @@ export default async function HomePage() {
           <span className="text-live" aria-hidden>
             ◈
           </span>
-          Deck
+          {PRODUCT_NAME}
         </div>
         <div className="flex items-center gap-2">
           <Button asChild size="sm" variant="ghost">
@@ -35,10 +36,10 @@ export default async function HomePage() {
 
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center px-6 py-16">
         <p className="font-mono text-xs tracking-widest text-live uppercase">
-          self-hosted livekit
+          lumivoice · self-hosted livekit
         </p>
         <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight sm:text-5xl">
-          Control room for your media infrastructure.
+          Voice AI control room for your media stack.
         </h1>
         <p className="mt-4 max-w-lg text-muted-foreground">
           Watch rooms, participants, egress jobs, and webhook history on your

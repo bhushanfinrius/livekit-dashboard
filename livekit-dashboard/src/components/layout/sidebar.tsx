@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getDashboardNav, type NavItem } from "@/lib/nav";
+import { PRODUCT_NAME } from "@/lib/brand";
 import { cn } from "@/lib/utils";
 
 function isActive(pathname: string, item: Pick<NavItem, "href" | "exact">) {
@@ -149,7 +150,7 @@ export function BrandMark({ href = "/" }: { href?: string }) {
       <span className="text-live" aria-hidden>
         ◈
       </span>
-      <span>Deck</span>
+      <span>{PRODUCT_NAME}</span>
     </Link>
   );
 }

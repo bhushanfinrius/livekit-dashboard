@@ -6,7 +6,7 @@ async function readJsonPayload<T>(response: Response): Promise<T & { error?: str
     throw new Error(
       response.ok
         ? "Server returned a non-JSON response"
-        : "Server error (not JSON). Check `docker compose logs deck` or the Next.js terminal.",
+        : "Server error (not JSON). Check `docker compose logs deck` or LumiVoice server logs.",
     );
   }
 }

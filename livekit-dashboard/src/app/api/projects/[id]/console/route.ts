@@ -50,7 +50,7 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const token = await access.livekit.tokens.mintParticipant({
       identity,
-      name: "Deck",
+      name: "LumiVoice",
       roomName,
     });
     startRoomRecordingInBackground(access.livekit, roomName);

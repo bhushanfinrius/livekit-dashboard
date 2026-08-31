@@ -146,7 +146,7 @@ export function SessionsView({
       {sessions.length === 0 ? (
         <EmptyState
           title="No session history in this range"
-          description="Make a Talk or SIP call so Deck can store room events and start an audio recording. Recordings also appear on Egresses."
+          description="Make a Talk or SIP call so LumiVoice can store room events and start an audio recording. Recordings also appear on Egresses."
         />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">

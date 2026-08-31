@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { PRODUCT_NAME } from "@/lib/brand";
 
 export function ErrorFallback({
   title,
@@ -23,7 +24,7 @@ export function ErrorFallback({
           </Button>
         ) : null}
         <Button asChild variant="outline">
-          <Link href="/">Back to Deck</Link>
+          <Link href="/">Back to {PRODUCT_NAME}</Link>
         </Button>
       </div>
     </div>

@@ -135,7 +135,7 @@ async function waitUntilReady(keys: LocalLiveKitKeys) {
 }
 
 const COMPOSE_ROTATE_ERROR =
-  "Key rotation is not available inside the Deck container. Use the API key and secret already shown (from livekit.yaml), then Create and connect. To generate a new pair, run Deck on the host with npm run dev.";
+  "Key rotation is not available inside the LumiVoice container. Use the API key and secret already shown (from livekit.yaml), then Create and connect. To generate a new pair, run LumiVoice on the host with npm run dev.";
 
 export async function applyLocalLiveKitKeys(mode: "generate" | "defaults"): Promise<LocalLiveKitKeys> {
   if (!canRotateLocalLiveKitKeys()) {

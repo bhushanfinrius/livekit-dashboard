@@ -143,7 +143,7 @@ export function RoomDrawer({
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">Join</h3>
                 <p className="text-sm text-muted-foreground">
-                  Open this room in Deck with mic and camera, like LiveKit Meet.
+                  Open this room in LumiVoice with mic and camera, like LiveKit Meet.
                 </p>
                 <Button
                   type="button"

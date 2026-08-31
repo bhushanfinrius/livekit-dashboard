@@ -34,7 +34,7 @@ export function SignupForm() {
       payload = (await response.json()) as { error?: string };
     } catch {
       setError(
-        "Could not create account (server did not return JSON). Check `docker compose logs deck`.",
+        "Could not create account (server did not return JSON). Check `docker compose logs deck` or LumiVoice server logs.",
       );
       setPending(false);
       return;

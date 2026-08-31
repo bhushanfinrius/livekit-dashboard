@@ -185,7 +185,7 @@ export function EventsFeed({
           {data.lastAt ? formatWhen(data.lastAt) : "never"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          If this stays on never, LiveKit is not reaching Deck. Check the URL,
+          If this stays on never, LiveKit is not reaching LumiVoice. Check the URL,
           port, and API key in <span className="font-mono">livekit.yaml</span>.
         </p>
       </section>

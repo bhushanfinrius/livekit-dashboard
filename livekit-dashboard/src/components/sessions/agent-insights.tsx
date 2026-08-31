@@ -62,7 +62,7 @@ export function AgentInsights({
         transcripts.length === 0 ? (
           <EmptyState
             title="No transcript stored for this session"
-            description="The agent posts conversation lines to Deck while the call is live. Self-hosted LiveKit does not send Cloud agent-observability transcripts."
+            description="The agent posts conversation lines to LumiVoice while the call is live. Self-hosted LiveKit does not send Cloud agent-observability transcripts."
           />
         ) : (
           <ol className="space-y-2">
@@ -95,7 +95,7 @@ export function AgentInsights({
         recordings.length === 0 ? (
           <EmptyState
             title="No recordings for this session"
-            description="Deck starts an audio recording when Talk, SIP, or any join opens a room. Files show here after the room ends. If this stays empty, check Egresses — livekit-egress must be running and GCS credentials must be set."
+            description="LumiVoice starts an audio recording when Talk, SIP, or any join opens a room. Files show here after the room ends. If this stays empty, check Egresses — livekit-egress must be running and GCS credentials must be set."
           />
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">

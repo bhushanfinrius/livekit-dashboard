@@ -27,7 +27,7 @@ export default async function OnboardingPage({
   return (
     <AuthShell
       title={memberships.length > 0 ? "New project" : "First project"}
-      subtitle="Point Deck at this machine's LiveKit. The form is pre-filled from livekit.yaml — create the project with those keys. Generating a new pair is optional and only works when Deck runs on the host."
+      subtitle="Point LumiVoice at this machine's LiveKit. The form is pre-filled from livekit.yaml — create the project with those keys. Generating a new pair is optional and only works when LumiVoice runs on the host."
     >
       <OnboardingForm />
     </AuthShell>

@@ -136,7 +136,9 @@ export function SettingsView({
             Browser Talk/Join always uses the LiveKit URL above (local{" "}
             <span className="font-mono">ws://127.0.0.1:7880</span>). Leave empty if you have no
             public tunnel. Docker workers still connect to{" "}
-            <span className="font-mono">ws://livekit:7880</span>.
+            <span className="font-mono">ws://livekit:7880</span>. For India VPS performance, enable
+            LiveKit TURN (<span className="font-mono">livekit.vps.example.yaml</span>) and set agent{" "}
+            <span className="font-mono">GOOGLE_CLOUD_LOCATION=asia-south1</span>.
           </p>
           <CopyField label="API key" value={initialApiKey} />
           {isOwner ? (

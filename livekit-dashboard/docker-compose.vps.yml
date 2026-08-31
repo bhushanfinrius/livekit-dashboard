@@ -1,0 +1,22 @@
+# VPS overlay — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+#
+# Exposes LiveKit built-in TURN (UDP/TCP 3478) for Cloud-like NAT traversal.
+
+services:
+  livekit:
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "50000-50100:50000-50100/udp"
+
+  sip:
+    # Advertise public IP for SIP media (phones).
+    # Ensure sip.yaml has use_external_ip: true on the VPS.
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10050:10000-10050/udp"
+      - "8088:8080"

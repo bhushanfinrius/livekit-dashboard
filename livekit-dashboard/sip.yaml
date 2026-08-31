@@ -6,5 +6,6 @@ redis:
   address: redis:6379
 sip_port: 5060
 rtp_port: 10000-10050
+# Laptop: false. India VPS: true (same as livekit.yaml rtc.use_external_ip).
 use_external_ip: false
 health_port: 8080

@@ -1,0 +1,34 @@
+# Production / India VPS LiveKit config (copy over livekit.yaml on the server).
+#
+#   cp livekit.vps.example.yaml livekit.yaml
+#   # edit: turn.domain, keys if rotated
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --force-recreate livekit sip egress
+#
+# Region tip: place the VPS in Mumbai/Bangalore and set agent GOOGLE_CLOUD_LOCATION=asia-south1.
+
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+
+# Built-in TURN — required for many India mobile / office NATs (Cloud parity).
+# Set domain to your public IP or DNS name (e.g. livekit.yourdomain.com or 1.2.3.4).
+turn:
+  enabled: true
+  domain: YOUR_PUBLIC_IP_OR_HOSTNAME
+  udp_port: 3478
+
+redis:
+  address: redis:6379
+
+keys:
+  # LiveKit 1.13+ requires API secrets >= 32 characters
+  deck_bcce7fdea121fc22: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
+
+webhook:
+  api_key: deck_bcce7fdea121fc22
+  urls:
+    - http://host.docker.internal:3000/api/webhooks/livekit
+    - http://deck:3000/api/webhooks/livekit

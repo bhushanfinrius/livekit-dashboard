@@ -82,12 +82,19 @@ DECK_TRANSCRIPT_URL   = os.getenv("DECK_TRANSCRIPT_URL", "").strip()
 DECK_TRANSCRIPT_SECRET = os.getenv("DECK_TRANSCRIPT_SECRET", "").strip()
 GOOGLE_API_KEY        = os.getenv("GOOGLE_API_KEY",        "")
 GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007")
-GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+# India latency: prefer asia-south1 (Mumbai). Override to us-central1 only if the model is unavailable in India.
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
 
 AGENT_NAME            = (os.getenv("AGENT_NAME") or "mahindra_scraping").strip() or "mahindra_scraping"
 LIVEKIT_URL           = os.getenv("LIVEKIT_URL",        "")
 LIVEKIT_API_KEY       = os.getenv("LIVEKIT_API_KEY",    "")
 LIVEKIT_API_SECRET    = os.getenv("LIVEKIT_API_SECRET", "")
+
+# Concurrency (Cloud-like capacity control). Default: 10 simultaneous jobs, 2 warm processes.
+AGENT_MAX_CONCURRENT_JOBS = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS", "10")))
+AGENT_NUM_IDLE_PROCESSES = max(0, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "2")))
+AGENT_LOAD_THRESHOLD = float(os.getenv("AGENT_LOAD_THRESHOLD", "1.0"))
+AGENT_JOB_MEMORY_WARN_MB = float(os.getenv("AGENT_JOB_MEMORY_WARN_MB", "800"))
 
 VOICEMAIL_DETECTION_ENABLED = os.getenv("VOICEMAIL_DETECTION_ENABLED", "true").lower() in ("1", "true", "yes")
 SIP_JOIN_TIMEOUT            = float(os.getenv("SIP_JOIN_TIMEOUT") or os.getenv("AMD_SIP_JOIN_TIMEOUT") or "20")
@@ -1786,11 +1793,27 @@ async def _end_call_as_no_answer(state: CallState, reason: str) -> None:
 # ════════════════════════════════════════════════════════════════════════════════
 # ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════════════════
-server = AgentServer()
+def _agent_load(agent_server: AgentServer) -> float:
+    """Job-count load so the worker accepts up to AGENT_MAX_CONCURRENT_JOBS (not only CPU%)."""
+    return min(len(agent_server.active_jobs) / float(AGENT_MAX_CONCURRENT_JOBS), 1.0)
+
+
+server = AgentServer(
+    load_threshold=AGENT_LOAD_THRESHOLD,
+    load_fnc=_agent_load,
+    # Prod SDK default is 20 idle processes — too heavy for typical VPS. Keep 1–2 warm.
+    num_idle_processes=AGENT_NUM_IDLE_PROCESSES,
+    job_memory_warn_mb=AGENT_JOB_MEMORY_WARN_MB,
+)
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext):
-    logger.info("🚀 Starting Lumiverse vCISO Sales Agent v8.0")
+    logger.info(
+        "🚀 Starting Lumiverse vCISO Sales Agent v8.0 (vertex=%s/%s max_jobs=%s)",
+        GOOGLE_CLOUD_PROJECT,
+        GOOGLE_CLOUD_LOCATION,
+        AGENT_MAX_CONCURRENT_JOBS,
+    )
 
     state = CallState(ctx)
 

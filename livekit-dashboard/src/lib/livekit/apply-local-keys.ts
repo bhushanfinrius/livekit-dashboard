@@ -79,12 +79,18 @@ export function canRotateLocalLiveKitKeys() {
 }
 
 export function readLocalLiveKitKeys(): LocalLiveKitKeys {
-  const file = path.join(repoRoot(), LIVEKIT_YAML);
+  const candidates = [
+    path.join(repoRoot(), LIVEKIT_YAML),
+    path.join(process.cwd(), LIVEKIT_YAML),
+  ];
   let parsed: { apiKey: string; apiSecret: string } | null = null;
-  try {
-    parsed = readKeysFromLiveKitYaml(readFileSync(file, "utf8"));
-  } catch {
-    parsed = null;
+  for (const file of candidates) {
+    try {
+      parsed = readKeysFromLiveKitYaml(readFileSync(file, "utf8"));
+      if (parsed) break;
+    } catch {
+      // try next location
+    }
   }
   return {
     url: LOCAL_LIVEKIT.url,

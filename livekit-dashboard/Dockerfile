@@ -22,7 +22,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-RUN apk add --no-cache libc6-compat openssl \
+RUN apk add --no-cache libc6-compat openssl docker-cli docker-cli-compose su-exec \
   && addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs \
   && npm install -g prisma@6.19.3
@@ -42,6 +42,5 @@ RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
   && chmod +x /app/docker-entrypoint.sh \
   && chown nextjs:nodejs /app/docker-entrypoint.sh /app/livekit.yaml
 
-USER nextjs
 EXPOSE 3000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

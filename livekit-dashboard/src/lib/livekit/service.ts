@@ -33,6 +33,9 @@ import {
   isEncryptedSecret,
 } from "@/lib/crypto/secret";
 import { ProjectAccessError } from "@/lib/livekit/errors";
+import { readLocalLiveKitKeys } from "@/lib/livekit/apply-local-keys";
+import { isLocalLiveKitUrl } from "@/lib/livekit/local-defaults";
+import { syncAgentWorkerKeys } from "@/lib/livekit/agent-worker";
 import { clientLivekitWsUrl, serverLivekitUrl, toHttpLivekitUrl, toWsLivekitUrl } from "@/lib/livekit/url";
 
 const VERIFY_ATTEMPTS = 4;
@@ -373,8 +376,32 @@ export async function getProjectLiveKit(
 }
 
 export async function getProjectLiveKitForWebhook(projectId: string) {
-  const project = await loadDecryptedProject(projectId);
+  let project = await loadDecryptedProject(projectId);
   if (!project) return null;
+
+  if (isLocalLiveKitUrl(project.livekitUrl)) {
+    const yamlKeys = readLocalLiveKitKeys();
+    if (
+      project.livekitApiKey !== yamlKeys.apiKey ||
+      project.livekitApiSecret !== yamlKeys.apiSecret
+    ) {
+      await prisma.project.update({
+        where: { id: projectId },
+        data: {
+          livekitApiKey: yamlKeys.apiKey,
+          livekitApiSecret: encryptLiveKitSecret(yamlKeys.apiSecret),
+        },
+      });
+      try {
+        syncAgentWorkerKeys(yamlKeys.apiKey, yamlKeys.apiSecret);
+      } catch {
+        // Agent worker may not be deployed yet.
+      }
+      project = await loadDecryptedProject(projectId);
+      if (!project) return null;
+    }
+  }
+
   return wrapClients(project.id, project.name, project, project.publicLivekitUrl);
 }
 

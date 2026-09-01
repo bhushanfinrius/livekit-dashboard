@@ -228,10 +228,16 @@ export async function loadSessionDetail(
 
   const merged = mergeRecordings(recordingsFromWebhooks(scopedRows.map((row) => row.rawPayload)), liveRecordings);
   const recordings = await Promise.all(
-    merged.map(async (recording) => ({
-      ...recording,
-      playableUrl: (await resolvePlayableUrl(recording.output)) ?? recording.playableUrl,
-    })),
+    merged.map(async (recording) => {
+      try {
+        return {
+          ...recording,
+          playableUrl: (await resolvePlayableUrl(recording.output)) ?? recording.playableUrl,
+        };
+      } catch {
+        return recording;
+      }
+    }),
   );
 
   return {

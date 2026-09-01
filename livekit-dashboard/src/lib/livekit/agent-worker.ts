@@ -5,7 +5,8 @@ import { prisma } from "@/lib/db";
 import {
   AGENT_COMPOSE_OVERRIDE,
   assertThisRepoLiveKitIsUp,
-  dockerCompose,
+  agentCompose,
+  COMPOSE_AGENT_BUILD_CONTEXT,
   repoRoot,
 } from "@/lib/docker/compose";
 import { isLocalLiveKitUrl } from "@/lib/livekit/local-defaults";
@@ -53,7 +54,26 @@ function runtimePath() {
 }
 
 function starterDir() {
+  const mount = process.env.AGENT_STARTER_MOUNT?.trim();
+  if (mount) return mount;
   return (process.env.AGENT_BUILD_CONTEXT ?? "").trim();
+}
+
+/** Host-side bind-mount path for docker compose (relative when LumiVoice runs in deck). */
+export function credentialMountHostPath(resolvedPath: string) {
+  const mount = process.env.AGENT_STARTER_MOUNT?.trim();
+  const normalized = resolvedPath.replace(/\\/g, "/");
+  if (mount) {
+    const mountNorm = mount.replace(/\\/g, "/");
+    if (normalized === mountNorm || normalized.startsWith(`${mountNorm}/`)) {
+      const rel = path.relative(mount, resolvedPath).replace(/\\/g, "/");
+      return rel ? `${COMPOSE_AGENT_BUILD_CONTEXT}/${rel}` : COMPOSE_AGENT_BUILD_CONTEXT;
+    }
+  }
+  if (process.env.COMPOSE_PROJECT_DIR?.trim()) {
+    return `${COMPOSE_AGENT_BUILD_CONTEXT}/${path.basename(resolvedPath)}`;
+  }
+  return normalized;
 }
 
 function starterEnvPath() {
@@ -170,6 +190,8 @@ export function rewriteCredentialPaths(
   env: RuntimeEnv,
   agentRoot: string,
   exists: (filePath: string) => boolean = existsSync,
+  toComposeHostPath: (resolvedPath: string) => string = (resolved) =>
+    resolved.replace(/\\/g, "/"),
 ): { env: RuntimeEnv; mounts: CredentialMount[] } {
   const next = { ...env };
   const mounts: CredentialMount[] = [];
@@ -178,11 +200,12 @@ export function rewriteCredentialPaths(
   for (const key of CREDENTIAL_KEYS) {
     const raw = next[key]?.trim();
     if (!raw || !looksLikeFilePath(raw)) continue;
-    const host = path.isAbsolute(raw) ? raw : path.resolve(agentRoot, raw);
-    if (!exists(host)) continue;
+    const resolved = path.isAbsolute(raw) ? raw : path.resolve(agentRoot, raw);
+    if (!exists(resolved)) continue;
+    const host = toComposeHostPath(resolved);
     let container = seen.get(host);
     if (!container) {
-      const safe = path.basename(host).replace(/[^A-Za-z0-9._-]/g, "_");
+      const safe = path.basename(resolved).replace(/[^A-Za-z0-9._-]/g, "_");
       container = `/secrets/${mounts.length}-${safe}`;
       seen.set(host, container);
       mounts.push({ host, container });
@@ -304,7 +327,7 @@ function truthyEnv(value: string | undefined) {
 export function inspectAgentWorker(): AgentWorkerSnapshot {
   let row: ComposePsRow | null = null;
   try {
-    row = parseComposePs(dockerCompose("ps --format json agent", { timeoutMs: 20_000 }));
+    row = parseComposePs(agentCompose("ps --format json agent", { timeoutMs: 20_000 }));
   } catch {
     row = null;
   }
@@ -312,7 +335,7 @@ export function inspectAgentWorker(): AgentWorkerSnapshot {
   const deployed = Boolean(env.AGENT_NAME?.trim());
   let logs = "";
   try {
-    logs = dockerCompose("logs --no-color --tail 250 agent", { timeoutMs: 20_000 });
+    logs = agentCompose("logs --no-color --tail 250 agent", { timeoutMs: 20_000 });
   } catch {
     logs = "";
   }
@@ -323,7 +346,7 @@ export function inspectAgentWorker(): AgentWorkerSnapshot {
     health: deployed ? parsed.health : "stopped",
     agentName: deployed ? env.AGENT_NAME?.trim() || null : null,
     container: deployed ? (row?.Name ?? null) : null,
-    entrypoint: env.AGENT_ENTRYPOINT?.trim() || (deployed ? "src/agant.py" : null),
+    entrypoint: env.AGENT_ENTRYPOINT?.trim() || (deployed ? "src/agent.py" : null),
     workerId: deployed ? parsed.workerId : null,
     lastError: deployed ? parsed.lastError : null,
     backendBaseUrl: env.BACKEND_BASE_URL?.trim() || null,
@@ -334,7 +357,7 @@ export function inspectAgentWorker(): AgentWorkerSnapshot {
 
 export function agentWorkerLogs(tail = 250) {
   try {
-    return dockerCompose(`logs --no-color --tail ${tail} agent`, { timeoutMs: 20_000 });
+    return agentCompose(`logs --no-color --tail ${tail} agent`, { timeoutMs: 20_000 });
   } catch (error) {
     return error instanceof Error ? error.message : "";
   }
@@ -399,7 +422,12 @@ export async function deployAgentWorker(options: {
     deckTranscriptUrl: `http://host.docker.internal:3000/api/projects/${options.projectId}/sessions/transcripts`,
     deckTranscriptSecret: process.env.DECK_TRANSCRIPT_SECRET?.trim(),
   });
-  const { env, mounts } = rewriteCredentialPaths(merged, agentRoot);
+  const { env, mounts } = rewriteCredentialPaths(
+    merged,
+    agentRoot,
+    existsSync,
+    credentialMountHostPath,
+  );
   const entrypoint = normalizeEntrypoint(env.AGENT_ENTRYPOINT);
   env.AGENT_ENTRYPOINT = entrypoint;
 
@@ -411,21 +439,21 @@ export async function deployAgentWorker(options: {
       ? "up -d --force-recreate --no-build --no-deps agent"
       : "up -d --build --force-recreate --no-deps agent";
 
-  dockerCompose(args, { timeoutMs: DEPLOY_TIMEOUT_MS });
+  agentCompose(args, { timeoutMs: DEPLOY_TIMEOUT_MS });
   return inspectAgentWorker();
 }
 
 export function stopAgentWorker() {
-  dockerCompose("stop agent", { timeoutMs: 60_000 });
+  agentCompose("stop agent", { timeoutMs: 60_000 });
   return inspectAgentWorker();
 }
 
 export function purgeAgentWorker() {
   try {
-    dockerCompose("rm -sf agent", { timeoutMs: 60_000 });
+    agentCompose("rm -sf agent", { timeoutMs: 60_000 });
   } catch {
     try {
-      dockerCompose("stop agent", { timeoutMs: 60_000 });
+      agentCompose("stop agent", { timeoutMs: 60_000 });
     } catch {
       // Container may already be gone.
     }
@@ -444,7 +472,7 @@ export function syncAgentWorkerKeys(apiKey: string, apiSecret: string) {
   });
   const { status } = inspectAgentWorker();
   if (status === "running" || status === "restarting") {
-    dockerCompose("up -d --force-recreate --no-build --no-deps agent", {
+    agentCompose("up -d --force-recreate --no-build --no-deps agent", {
       timeoutMs: 120_000,
     });
   }

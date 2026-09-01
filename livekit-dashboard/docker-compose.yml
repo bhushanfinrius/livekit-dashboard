@@ -112,10 +112,20 @@ services:
       # Server-side SDK calls the Compose service. The browser still uses 127.0.0.1:7880.
       LIVEKIT_INTERNAL_URL: http://livekit:7880
       DECK_IN_COMPOSE: "1"
+      COMPOSE_PROJECT_DIR: /compose
+      COMPOSE_PROJECT_NAME: livekit-dashboard
+      AGENT_STARTER_MOUNT: /agent-starter
+      # Relative path for compose build; absolute paths from .env break deploy inside deck.
+      AGENT_BUILD_CONTEXT: ./agent-starter-python
       HOSTNAME: 0.0.0.0
       PORT: "3000"
     volumes:
       - ./livekit.yaml:/app/livekit.yaml:ro
+      # Agent Deploy from the UI: host compose files + starter .env.local + Docker socket.
+      - .:/compose:rw
+      - ../agent-starter-python:/agent-starter:ro
+      - ../agent-starter-python:/compose/agent-starter-python:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "3000:3000"
     extra_hosts:

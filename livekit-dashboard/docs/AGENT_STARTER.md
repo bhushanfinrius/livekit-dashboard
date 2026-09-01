@@ -30,21 +30,25 @@ Optional LumiVoice extras (Deploy sets these when running from the host UI):
 
 | Variable | Purpose |
 |---|---|
-| `AGENT_ENTRYPOINT` | e.g. `src/agent.py` or `src/agant.py` |
+| `AGENT_ENTRYPOINT` | e.g. `src/agent.py` (Mahindra/vCISO worker) |
 | `DECK_TRANSCRIPT_URL` | `http://host.docker.internal:3000/api/projects/<id>/sessions/transcripts` |
 | `DECK_TRANSCRIPT_SECRET` | Same value as LumiVoice `.env` |
 | `SKIP_CREDIT_CHECK` | `1` for console/demo if the agent checks billing |
 
 Copy keys from LumiVoice **Settings → Use with CLI** (secret from API keys / project create).
 
-## Mode 1 — LumiVoice Deploy (host UI)
+## Mode 1 — LumiVoice Deploy (Docker UI or host UI)
 
-Requires LumiVoice running on the **host** (`npm run dev`) so Agents → Deploy can call `docker compose`.
+When LumiVoice runs in Docker (`docker compose up deck`), **Agents → Deploy** works if the `deck` service has the Docker socket and compose project mount (see `docker-compose.yml`). Rebuild after pulling: `docker compose up -d --build deck`.
+
+Alternatively run LumiVoice on the **host** (`npm run dev`) so Deploy calls `docker compose` from your machine.
 
 1. Clone or copy `agent-starter-python` next to `livekit-dashboard`.
-2. In LumiVoice `.env` set `AGENT_BUILD_CONTEXT` to that folder (forward slashes, even on Windows).
+2. In LumiVoice `.env` set `AGENT_BUILD_CONTEXT` to that folder:
+   - **Docker LumiVoice** (`docker compose up deck`): use `../agent-starter-python` in `.env` — the deck service overrides this to `./agent-starter-python` at deploy time.
+   - **Host dev** (`npm run dev`): relative or absolute path is fine.
 3. Put **all** model keys in the starter `.env.local` (not in LumiVoice `.env`).
-4. Open **Agents** → Deploy worker. Set agent name and entrypoint (`src/agant.py` for Mahindra/vCISO).
+4. Open **Agents** → Deploy worker. Set agent name and entrypoint (`src/agent.py` for Mahindra/vCISO).
 5. Wait until the card shows **registered**.
 6. Click **Talk**. Stay connected; the agent joins after you do.
 
@@ -59,10 +63,20 @@ cd agent-starter-python
 cp .env.example .env.local
 # LIVEKIT_URL=ws://YOUR_SERVER:7880 and project key/secret
 uv sync
-uv run src/agant.py start
+uv run src/agent.py start
 ```
 
 On a VPS, see [VPS-DEPLOY.md](./VPS-DEPLOY.md) section 9.
+
+## Mode 4 — Deploy from any laptop (Cloud-style)
+
+Like `lk agent deploy`, but for your VPS: [AGENT-DEPLOY-REMOTE.md](./AGENT-DEPLOY-REMOTE.md).
+
+```bash
+cd livekit-dashboard
+cp .deploy.env.example .deploy.env   # set LV_DEPLOY_HOST
+npm run agent:deploy:remote -- --push
+```
 
 ## Mode 3 — Talk, rooms, and recordings
 
@@ -73,5 +87,4 @@ On a VPS, see [VPS-DEPLOY.md](./VPS-DEPLOY.md) section 9.
 
 | File | When to use |
 |---|---|
-| `src/agent.py` | Stock LiveKit starter |
-| `src/agant.py` | Mahindra / vCISO production worker |
+| `src/agent.py` | Mahindra / vCISO production worker (LiveKit starter layout) |

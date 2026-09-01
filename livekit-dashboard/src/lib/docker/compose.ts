@@ -4,6 +4,17 @@ import path from "node:path";
 
 export const OUR_LIVEKIT = "livekit-dashboard-livekit-1";
 export const AGENT_COMPOSE_OVERRIDE = "docker-compose.agent.yml";
+/** Relative to the compose project dir (livekit-dashboard/). Works from deck at /compose. */
+export const COMPOSE_AGENT_BUILD_CONTEXT = "./agent-starter-python";
+
+/** Build context path passed to `docker compose` (must not be an absolute Windows path in deck). */
+export function agentBuildContextForCompose() {
+  if (process.env.DECK_IN_COMPOSE === "1" || process.env.COMPOSE_PROJECT_DIR?.trim()) {
+    return COMPOSE_AGENT_BUILD_CONTEXT;
+  }
+  const configured = process.env.AGENT_BUILD_CONTEXT?.trim();
+  return configured || COMPOSE_AGENT_BUILD_CONTEXT;
+}
 
 type ExecError = Error & { stdout?: Buffer | string; stderr?: Buffer | string };
 
@@ -11,8 +22,32 @@ function composeShell() {
   return process.platform === "win32" ? "cmd.exe" : "/bin/sh";
 }
 
+/** Host compose project dir; `/compose` when LumiVoice runs in the deck container. */
+export function composeProjectDir() {
+  const fromEnv = process.env.COMPOSE_PROJECT_DIR?.trim();
+  return fromEnv || process.cwd();
+}
+
 export function repoRoot() {
-  return process.cwd();
+  return composeProjectDir();
+}
+
+function assertDockerCli() {
+  try {
+    execSync("docker version", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: composeShell(),
+      timeout: 10_000,
+    });
+  } catch (error) {
+    if (process.env.DECK_IN_COMPOSE === "1") {
+      throw new Error(
+        "Agent Deploy from Docker LumiVoice needs the Docker CLI and socket on the deck service. Rebuild with the latest docker-compose.yml (`docker compose up -d --build deck`) or run `npm run dev` on the host and deploy from there.",
+      );
+    }
+    throw new Error(errorOutput(error) || "docker CLI is not available");
+  }
 }
 
 function errorOutput(error: unknown) {
@@ -26,15 +61,25 @@ function errorOutput(error: unknown) {
   return error instanceof Error ? error.message : "docker compose failed";
 }
 
+const AGENT_PROFILE = "--profile agent";
+
 export function dockerCompose(args: string, options?: { timeoutMs?: number }) {
-  const overridePath = path.join(repoRoot(), AGENT_COMPOSE_OVERRIDE);
+  assertDockerCli();
+  const projectDir = composeProjectDir();
+  const overridePath = path.join(projectDir, AGENT_COMPOSE_OVERRIDE);
   const files = existsSync(overridePath)
     ? `-f docker-compose.yml -f ${AGENT_COMPOSE_OVERRIDE} `
     : "";
   try {
-    return execSync(`docker compose ${files}${args}`, {
-      cwd: repoRoot(),
+    const projectName = process.env.COMPOSE_PROJECT_NAME?.trim();
+    const projectFlag = projectName ? `-p ${projectName} ` : "";
+    return execSync(`docker compose ${projectFlag}${files}${args}`, {
+      cwd: projectDir,
       encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BUILD_CONTEXT: agentBuildContextForCompose(),
+      },
       stdio: ["ignore", "pipe", "pipe"],
       shell: composeShell(),
       timeout: options?.timeoutMs ?? 120_000,
@@ -42,6 +87,10 @@ export function dockerCompose(args: string, options?: { timeoutMs?: number }) {
   } catch (error) {
     throw new Error(errorOutput(error) || "docker compose failed");
   }
+}
+
+export function agentCompose(args: string, options?: { timeoutMs?: number }) {
+  return dockerCompose(`${AGENT_PROFILE} ${args}`, options);
 }
 
 export function occupying7880() {

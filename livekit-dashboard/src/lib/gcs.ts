@@ -1,5 +1,7 @@
 import { createHash, createSign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { composeProjectDir } from "@/lib/docker/compose";
 
 export type GcsObject = {
   bucket: string;
@@ -21,10 +23,37 @@ export function gcsBucketName() {
   return env("GCS_BUCKET_NAME");
 }
 
+/** Resolve GCS JSON path — host paths in .env do not exist inside the deck container. */
+export function resolveGcsCredentialsPath(configured: string) {
+  const normalized = configured.replace(/\\/g, "/");
+  if (existsSync(configured)) return configured;
+
+  const basename = path.basename(normalized);
+  const mount = process.env.AGENT_STARTER_MOUNT?.trim();
+  if (mount) {
+    const mounted = path.join(mount, basename);
+    if (existsSync(mounted)) return mounted;
+  }
+
+  const inCompose = path.join(composeProjectDir(), "agent-starter-python", basename);
+  if (existsSync(inCompose)) return inCompose;
+
+  return configured;
+}
+
 export function loadGcsCredentials(): GcsCredentials | null {
   const inline = env("GCS_CREDENTIALS_JSON");
-  const path = env("GCS_CREDENTIALS_PATH") ?? env("GOOGLE_APPLICATION_CREDENTIALS");
-  const raw = inline ?? (path ? readFileSync(path, "utf8") : null);
+  const configured = env("GCS_CREDENTIALS_PATH") ?? env("GOOGLE_APPLICATION_CREDENTIALS");
+  let raw = inline;
+  if (!raw && configured) {
+    const resolved = resolveGcsCredentialsPath(configured);
+    try {
+      if (!existsSync(resolved)) return null;
+      raw = readFileSync(resolved, "utf8");
+    } catch {
+      return null;
+    }
+  }
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<GcsCredentials>;

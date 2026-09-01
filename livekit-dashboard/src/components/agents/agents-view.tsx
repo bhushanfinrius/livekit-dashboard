@@ -90,7 +90,7 @@ export function AgentsView({
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState("");
   const [agentName, setAgentName] = useState(DEFAULT_AGENT_NAME);
-  const [entrypoint, setEntrypoint] = useState("src/agant.py");
+  const [entrypoint, setEntrypoint] = useState("src/agent.py");
   const [backendBaseUrl, setBackendBaseUrl] = useState("https://uat-api.solvox.ai");
   const [backendWebhookUrl, setBackendWebhookUrl] = useState(
     "https://uat-api.solvox.ai/api/webhook/call-event",
@@ -344,7 +344,7 @@ export function AgentsView({
                       {worker?.workerId ?? worker?.container ?? "local"}
                     </p>
                     <p className="mt-1 font-mono text-xs text-muted-foreground">
-                      {worker?.entrypoint ?? "src/agant.py"}
+                      {worker?.entrypoint ?? "src/agent.py"}
                     </p>
                   </div>
                 </div>
@@ -490,7 +490,7 @@ export function AgentsView({
                 className="font-mono"
                 value={entrypoint}
                 onChange={(event) => setEntrypoint(event.target.value)}
-                placeholder="src/agant.py"
+                placeholder="src/agent.py"
               />
             </div>
             <div className="space-y-1.5">
@@ -530,7 +530,7 @@ export function AgentsView({
                   method: "POST",
                   body: JSON.stringify({
                     agentName: agentName.trim(),
-                    entrypoint: entrypoint.trim() || "src/agant.py",
+                    entrypoint: entrypoint.trim() || "src/agent.py",
                     backendBaseUrl: backendBaseUrl.trim(),
                     backendWebhookUrl: backendWebhookUrl.trim(),
                     skipCreditCheck,

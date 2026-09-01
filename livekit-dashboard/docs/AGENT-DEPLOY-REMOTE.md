@@ -48,10 +48,21 @@ Add SSH key to the VPS (`ssh-copy-id ubuntu@YOUR_VPS_IP`).
 
 ## Deploy commands
 
+Pass **agent name** and **entrypoint** on the command line (overrides `.deploy.env`):
+
+```bash
+# Flags
+npm run agent:deploy:remote -- --name mahindra_scraping --entrypoint src/agent.py --push
+
+# Shorthand positional: deploy NAME ENTRYPOINT
+npm run agent:deploy:remote -- mahindra_scraping src/agent.py --push
+npm run agent:deploy:remote -- sales_bot src/agent3.py --push
+```
+
 | Command | What it does |
 |---------|----------------|
 | `npm run agent:deploy` | Deploy agent **locally** (Docker on this PC) |
-| `npm run agent:deploy:remote` | Push (if enabled) + pull on VPS + build + start agent |
+| `npm run agent:deploy:remote -- --name X --entrypoint src/Y.py` | Push (if enabled) + pull on VPS + build + start |
 | `npm run agent:status:remote` | Remote container status + last logs |
 | `npm run agent:logs:remote` | Stream remote agent logs |
 

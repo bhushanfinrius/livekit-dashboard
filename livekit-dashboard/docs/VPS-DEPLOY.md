@@ -43,7 +43,32 @@ Log out and back in, then verify:
 docker compose version
 ```
 
-## 3. Clone the repo
+## 3. Put the code on the VPS
+
+### Option A — Direct upload (SFTP / rsync / scp)
+
+Upload **both folders as siblings** (no git required):
+
+```
+/your/path/
+├── livekit-dashboard/
+└── agent-starter-python/
+```
+
+Then on the VPS:
+
+```bash
+cd /your/path/livekit-dashboard
+cp .env.vps.example .env
+nano .env
+
+cp ../agent-starter-python/.env.example ../agent-starter-python/.env.local
+nano ../agent-starter-python/.env.local
+```
+
+Agent deploy commands: **[VPS-AGENT-COMMANDS.md](./VPS-AGENT-COMMANDS.md)**
+
+### Option B — Git clone
 
 ```bash
 sudo mkdir -p /opt/lumivoice
@@ -162,8 +187,10 @@ AGENT_NUM_IDLE_PROCESSES=2
 
 ```bash
 uv sync
-uv run src/agant.py start
+uv run src/agent.py start
 ```
+
+**Prefer Docker on VPS:** see [VPS-AGENT-COMMANDS.md](./VPS-AGENT-COMMANDS.md) — `npm run agent:deploy:vps -- mahindra_scraping src/agent.py`
 
 `asia-south1` (Mumbai) is the default in code now. Avoid `us-central1` for India callers unless the model is missing in India.
 

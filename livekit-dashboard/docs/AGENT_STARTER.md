@@ -66,7 +66,7 @@ uv sync
 uv run src/agent.py start
 ```
 
-On a VPS, see [VPS-DEPLOY.md](./VPS-DEPLOY.md) section 9.
+On a VPS, see [VPS-DEPLOY.md](./VPS-DEPLOY.md) and **[VPS-AGENT-COMMANDS.md](./VPS-AGENT-COMMANDS.md)** (direct upload + `npm run agent:deploy:vps`).
 
 ## Mode 4 — Deploy from any laptop (Cloud-style)
 

@@ -5,7 +5,7 @@ import {
   requireProjectLiveKit,
 } from "@/lib/api/project";
 import { toAgentDispatchSnapshot } from "@/lib/livekit";
-import { startRoomRecordingInBackground } from "@/lib/egress/recording";
+import { ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
 import { agentDispatchSchema, deleteDispatchSchema } from "@/lib/validators/sip";
 
 export const dynamic = "force-dynamic";
@@ -27,12 +27,19 @@ export async function POST(request: Request, context: RouteContext) {
   if (access.error) return access.error;
 
   try {
+    const roomResult = await ensureRoomWithAutoTrackEgress(
+      access.livekit,
+      parsed.data.roomName,
+      parsed.data.agentName,
+    );
+    if (roomResult.reason === "error" || roomResult.reason === "unconfigured") {
+      console.error("[recording:auto-track]", parsed.data.roomName, roomResult.error ?? roomResult.reason);
+    }
     const dispatch = await access.livekit.agents.createDispatch(
       parsed.data.roomName,
       parsed.data.agentName,
       parsed.data.metadata,
     );
-    startRoomRecordingInBackground(access.livekit, parsed.data.roomName);
     return jsonOk({ dispatch: toAgentDispatchSnapshot(dispatch) }, 201);
   } catch (error) {
     return liveKitActionError(error);

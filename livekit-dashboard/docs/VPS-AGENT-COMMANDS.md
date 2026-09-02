@@ -19,20 +19,22 @@ Run these **on the VPS** after uploading `livekit-dashboard/` and `agent-starter
 cd /path/to/livekit-dashboard
 
 cp .env.vps.example .env
-nano .env                    # AUTH_SECRET, ENCRYPTION_KEY, AUTH_URL=http://YOUR_IP:3000
+nano .env
+# LIVEKIT_PUBLIC_IP=YOUR_PUBLIC_IP
+# AUTH_SECRET, ENCRYPTION_KEY, AUTH_URL=http://YOUR_IP:3000
 
 cp ../agent-starter-python/.env.example ../agent-starter-python/.env.local
 nano ../agent-starter-python/.env.local
-# LIVEKIT_API_KEY + LIVEKIT_API_SECRET from livekit.yaml
-# AGENT_NAME=mahindra_scraping, Vertex/Gemini keys, GOOGLE_CLOUD_LOCATION=asia-south1
+# LIVEKIT_API_KEY + LIVEKIT_API_SECRET from config/livekit.vps.yaml.template
+# AGENT_NAME=mahindra_scraping, SKIP_CREDIT_CHECK=1
+# Vertex/Gemini keys, GOOGLE_CLOUD_LOCATION=asia-south1
+# GOOGLE_APPLICATION_CREDENTIALS=solvoxai.json
+# GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json
 
-cp livekit.vps.example.yaml livekit.yaml   # if not already configured for public IP
+# Upload solvoxai.json + livekit-storage.json to ../agent-starter-python/
 
-# Start stack (UI + LiveKit + SIP + egress)
-npm run docker:vps
-# or without npm:
-docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build \
-  postgres redis livekit sip egress deck
+# Start stack (generates config/livekit.runtime.yaml, mounts VPS LiveKit/SIP configs)
+npm run docker:vps:up
 ```
 
 ---
@@ -95,4 +97,4 @@ Look for in logs: `registered worker` and `"agent_name": "mahindra_scraping"`.
 
 Open `http://YOUR_VPS_IP:3000` → **Agents → Deploy** (same Docker agent container).
 
-See also [VPS-DEPLOY.md](./VPS-DEPLOY.md).
+See also [VPS-DOCKER.md](./VPS-DOCKER.md) · [VPS-DEPLOY.md](./VPS-DEPLOY.md).

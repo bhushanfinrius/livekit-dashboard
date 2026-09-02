@@ -12,6 +12,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  buildAgentComposeOverride,
+  parseEnvFile,
+  resolveCredentialMounts,
+} from "./vps-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_ROOT = path.resolve(__dirname, "..");
@@ -35,27 +40,6 @@ function starterDir() {
       : path.resolve(DASHBOARD_ROOT, fromEnv);
   }
   return path.resolve(DASHBOARD_ROOT, "../agent-starter-python");
-}
-
-function parseEnvFile(content) {
-  const out = {};
-  for (const raw of content.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (value.startsWith('"') && value.endsWith('"')) {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        value = value.slice(1, -1);
-      }
-    }
-    out[key] = value;
-  }
-  return out;
 }
 
 function encodeEnvFile(values) {
@@ -108,16 +92,6 @@ function agentBuildContextForCompose(starter) {
   return rel.startsWith("..") ? rel : `./${rel}`;
 }
 
-function buildAgentComposeOverride(entrypoint) {
-  if (entrypoint === DEFAULT_ENTRYPOINT) {
-    return "services:\n  agent: {}\n";
-  }
-  return `services:
-  agent:
-    command: ["uv", "run", "${entrypoint.replace(/"/g, '\\"')}", "start"]
-`;
-}
-
 function resolveBuildContext() {
   const starter = starterDir();
   return { starter, buildContext: agentBuildContextForCompose(starter) };
@@ -129,10 +103,10 @@ function readExistingRuntime() {
   return parseEnvFile(readFileSync(file, "utf8"));
 }
 
-function ensureComposeOverride(entrypoint) {
+function ensureComposeOverride(entrypoint, mounts = []) {
   const overridePath = path.join(DASHBOARD_ROOT, COMPOSE_OVERRIDE);
   if (!existsSync(overridePath)) {
-    writeFileSync(overridePath, buildAgentComposeOverride(entrypoint), "utf8");
+    writeFileSync(overridePath, buildAgentComposeOverride(entrypoint, mounts), "utf8");
   }
 }
 
@@ -147,19 +121,33 @@ function prepareRuntimeEnv(agentName, entrypoint) {
     process.exit(1);
   }
 
+  const starterEnv = parseEnvFile(readFileSync(envLocal, "utf8"));
+  const { env: credEnv, mounts } = resolveCredentialMounts(
+    DASHBOARD_ROOT,
+    starter,
+    starterEnv,
+  );
+
   const merged = {
-    ...parseEnvFile(readFileSync(envLocal, "utf8")),
+    ...credEnv,
     LIVEKIT_URL: "ws://livekit:7880",
     AGENT_NAME: agentName,
     AGENT_ENTRYPOINT: entrypoint,
+    SKIP_CREDIT_CHECK: credEnv.SKIP_CREDIT_CHECK?.trim() || "1",
   };
 
   writeFileSync(path.join(DASHBOARD_ROOT, RUNTIME_ENV), encodeEnvFile(merged), "utf8");
   writeFileSync(
     path.join(DASHBOARD_ROOT, COMPOSE_OVERRIDE),
-    buildAgentComposeOverride(entrypoint),
+    buildAgentComposeOverride(entrypoint, mounts),
     "utf8",
   );
+
+  if (mounts.length > 0) {
+    console.log(
+      `Credential mounts: ${mounts.map((m) => `${m.host} → ${m.container}`).join(", ")}`,
+    );
+  }
 
   return { starter, buildContext: agentBuildContextForCompose(starter) };
 }
@@ -235,7 +223,7 @@ Flags:
   --help
 
 Stack (once):
-  npm run docker:vps
+  npm run docker:vps:up
 `);
 }
 

@@ -5,7 +5,9 @@
   "scripts": {
     "docker:up": "node scripts/docker-up.mjs",
     "docker:stack": "docker compose up -d --build postgres redis livekit sip egress deck",
-    "docker:vps": "docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build postgres redis livekit sip egress deck",
+    "docker:vps": "node scripts/vps-up.mjs",
+    "docker:vps:up": "node scripts/vps-up.mjs",
+    "docker:vps:up:agent": "node scripts/vps-up.mjs --agent",
     "agent:deploy": "docker compose --profile agent up -d --build agent",
     "agent:deploy:vps": "node scripts/deploy-agent-vps.mjs deploy --wait",
     "agent:logs:vps": "node scripts/deploy-agent-vps.mjs logs",

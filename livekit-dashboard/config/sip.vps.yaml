@@ -1,0 +1,11 @@
+# VPS SIP — mounted by docker-compose.vps.yml (use_external_ip: true for phone media).
+log_level: info
+api_key: deck_bcce7fdea121fc22
+api_secret: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
+ws_url: ws://livekit:7880
+redis:
+  address: redis:6379
+sip_port: 5060
+rtp_port: 10000-10050
+use_external_ip: true
+health_port: 8080

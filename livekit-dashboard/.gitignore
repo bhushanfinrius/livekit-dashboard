@@ -38,6 +38,9 @@ yarn-error.log*
 .agent.runtime.env
 docker-compose.agent.yml
 
+# Generated on VPS by: npm run docker:vps:up (from LIVEKIT_PUBLIC_IP in .env)
+config/livekit.runtime.yaml
+
 # vercel
 .vercel
 

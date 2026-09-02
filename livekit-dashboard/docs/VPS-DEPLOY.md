@@ -103,32 +103,35 @@ AGENT_BUILD_CONTEXT="/opt/lumivoice/agent-starter-python"
 
 Never commit `.env` to git.
 
-## 5. LiveKit + TURN (Cloud-like NAT)
+## 5. LiveKit + TURN (automatic)
 
-Use the VPS example config (external IP + TURN):
+Set your public IP in `.env` and use the one-command VPS stack:
+
+```bash
+cp .env.vps.example .env
+nano .env   # LIVEKIT_PUBLIC_IP=your.public.ip.or.hostname
+
+npm run docker:vps:up
+```
+
+This generates `config/livekit.runtime.yaml` from `config/livekit.vps.yaml.template` and mounts `config/sip.vps.yaml` (`use_external_ip: true`). See [VPS-DOCKER.md](./VPS-DOCKER.md).
+
+**Manual alternative** (legacy):
 
 ```bash
 cp livekit.vps.example.yaml livekit.yaml
-# Edit turn.domain → your public IP or hostname (required)
-# Edit sip.yaml → use_external_ip: true
 PUBLIC_IP=$(curl -4 -s ifconfig.me)
 sed -i "s/YOUR_PUBLIC_IP_OR_HOSTNAME/${PUBLIC_IP}/" livekit.yaml
-```
-
-Also set in `sip.yaml`:
-
-```yaml
-use_external_ip: true
+# sip.yaml → use_external_ip: true
 ```
 
 ## 6. Start the stack (with TURN ports)
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build \
-  postgres redis livekit sip egress deck
-# same as: npm run docker:vps
+npm run docker:vps:up
+# same as: node scripts/vps-up.mjs
 
-docker compose ps
+docker compose -f docker-compose.yml -f docker-compose.vps.yml ps
 docker compose logs deck --tail 50
 curl -s http://127.0.0.1:3000/api/health
 ```

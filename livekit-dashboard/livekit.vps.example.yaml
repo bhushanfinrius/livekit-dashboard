@@ -1,10 +1,12 @@
-# Production / India VPS LiveKit config (copy over livekit.yaml on the server).
+# Production / India VPS LiveKit config.
 #
+# Preferred: set LIVEKIT_PUBLIC_IP in .env and run:
+#   npm run docker:vps:up
+# (generates config/livekit.runtime.yaml from config/livekit.vps.yaml.template)
+#
+# Legacy manual copy:
 #   cp livekit.vps.example.yaml livekit.yaml
-#   # edit: turn.domain, keys if rotated
 #   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --force-recreate livekit sip egress
-#
-# Region tip: place the VPS in Mumbai/Bangalore and set agent GOOGLE_CLOUD_LOCATION=asia-south1.
 
 port: 7880
 rtc:

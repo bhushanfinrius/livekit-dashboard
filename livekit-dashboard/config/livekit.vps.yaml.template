@@ -1,0 +1,23 @@
+# Generated on VPS by: npm run docker:vps:up (from LIVEKIT_PUBLIC_IP in .env)
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+
+turn:
+  enabled: true
+  domain: __LIVEKIT_PUBLIC_IP__
+  udp_port: 3478
+
+redis:
+  address: redis:6379
+
+keys:
+  deck_bcce7fdea121fc22: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
+
+webhook:
+  api_key: deck_bcce7fdea121fc22
+  urls:
+    - http://deck:3000/api/webhooks/livekit

@@ -5,7 +5,7 @@ import {
   requireProjectLiveKit,
   requireProjectOwner,
 } from "@/lib/api/project";
-import { startRoomRecordingInBackground } from "@/lib/egress/recording";
+import { ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
 import { inspectAgentWorker } from "@/lib/livekit/agent-worker";
 import { isLoopbackLivekitUrl } from "@/lib/livekit/url";
 import { consoleTokenSchema } from "@/lib/validators/console";
@@ -48,12 +48,19 @@ export async function POST(request: Request, context: RouteContext) {
   const wsUrl = access.livekit.browserWsUrl;
 
   try {
+    const roomResult = await ensureRoomWithAutoTrackEgress(
+      access.livekit,
+      roomName,
+      dispatchAgent ? agentName : undefined,
+    );
+    if (roomResult.reason === "error" || roomResult.reason === "unconfigured") {
+      console.error("[recording:auto-track]", roomName, roomResult.error ?? roomResult.reason);
+    }
     const token = await access.livekit.tokens.mintParticipant({
       identity,
       name: "LumiVoice",
       roomName,
     });
-    startRoomRecordingInBackground(access.livekit, roomName);
     return jsonOk({
       token,
       wsUrl,

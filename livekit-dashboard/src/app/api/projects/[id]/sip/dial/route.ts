@@ -5,7 +5,7 @@ import {
   requireProjectLiveKit,
 } from "@/lib/api/project";
 import { sipDialSchema } from "@/lib/validators/sip";
-import { startRoomRecordingInBackground } from "@/lib/egress/recording";
+import { ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +26,10 @@ export async function POST(request: Request, context: RouteContext) {
   if (access.error) return access.error;
 
   try {
+    const roomResult = await ensureRoomWithAutoTrackEgress(access.livekit, parsed.data.roomName);
+    if (roomResult.reason === "error" || roomResult.reason === "unconfigured") {
+      console.error("[recording:auto-track]", parsed.data.roomName, roomResult.error ?? roomResult.reason);
+    }
     const participant = await access.livekit.sip.dial(
       parsed.data.sipTrunkId,
       parsed.data.number,
@@ -34,7 +38,6 @@ export async function POST(request: Request, context: RouteContext) {
         ? { participantIdentity: parsed.data.participantIdentity }
         : undefined,
     );
-    startRoomRecordingInBackground(access.livekit, parsed.data.roomName);
     return jsonOk({
       participantId: participant.participantId,
       participantIdentity: participant.participantIdentity,

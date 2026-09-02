@@ -8,6 +8,7 @@ import {
   SipClient,
   WebhookReceiver,
   type AgentDispatch,
+  type CreateOptions,
   type CreateSipDispatchRuleOptions,
   type CreateSipInboundTrunkOptions,
   type CreateSipOutboundTrunkOptions,
@@ -56,6 +57,7 @@ export type ProjectLiveKit = {
   browserWsUrl: string;
   livekitApiKey: string;
   rooms: {
+    create: (options: CreateOptions) => Promise<Room>;
     list: () => Promise<Room[]>;
     listParticipants: (room: string) => Promise<ParticipantInfo[]>;
     removeParticipant: (room: string, identity: string) => Promise<void>;
@@ -192,6 +194,7 @@ function wrapClients(
     browserWsUrl: toWsLivekitUrl(credentials.livekitUrl),
     livekitApiKey: credentials.livekitApiKey,
     rooms: {
+      create: (options) => sdk.rooms.createRoom(options),
       list: () => sdk.rooms.listRooms(),
       listParticipants: (room) => sdk.rooms.listParticipants(room),
       removeParticipant: (room, identity) =>

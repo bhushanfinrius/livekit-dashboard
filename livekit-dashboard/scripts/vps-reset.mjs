@@ -41,7 +41,10 @@ function assertCuid(id, label) {
 }
 
 function psql(sql) {
-  return sh(`${COMPOSE} exec -T postgres psql -U deck -d deck -v ON_ERROR_STOP=1 -t -A -F'|' -c ${JSON.stringify(sql)}`);
+  const oneLine = sql.replace(/\s+/g, " ").trim();
+  return sh(
+    `${COMPOSE} exec -T postgres psql -U deck -d deck -v ON_ERROR_STOP=1 -t -A -F'|' -c ${JSON.stringify(oneLine)}`,
+  );
 }
 
 function readYamlKeys() {
@@ -107,11 +110,7 @@ function pickKeepProject(explicit) {
     return explicit;
   }
   const rows = psql(
-    `SELECT p.id, COUNT(w.id) AS n
-     FROM "Project" p
-     LEFT JOIN "WebhookEvent" w ON w."projectId" = p.id
-     GROUP BY p.id
-     ORDER BY n DESC, p."createdAt" ASC;`,
+    'SELECT p.id, COUNT(w.id) AS n FROM "Project" p LEFT JOIN "WebhookEvent" w ON w."projectId" = p.id GROUP BY p.id, p."createdAt" ORDER BY n DESC, p."createdAt" ASC',
   ).trim();
   if (!rows) throw new Error("No projects in database — sign up in the UI first, or run --hard reset.");
   const keepId = rows.split("\n")[0].split("|")[0];
@@ -131,13 +130,9 @@ function fixProjects(keepId, keys, publicLivekitUrl) {
     }
   }
 
-  psql(`
-    UPDATE "Project"
-    SET "livekitUrl" = '${LOCAL_LIVEKIT_URL}',
-        "livekitApiKey" = '${keys.apiKey}',
-        "publicLivekitUrl" = '${publicLivekitUrl}'
-    WHERE id = '${keepId}';
-  `);
+  psql(
+    `UPDATE "Project" SET "livekitUrl" = '${LOCAL_LIVEKIT_URL}', "livekitApiKey" = '${keys.apiKey}', "publicLivekitUrl" = '${publicLivekitUrl.replace(/'/g, "''")}' WHERE id = '${keepId}'`,
+  );
 
   console.log(`  livekitUrl → ${LOCAL_LIVEKIT_URL}`);
   console.log(`  publicLivekitUrl → ${publicLivekitUrl}`);

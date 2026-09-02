@@ -19,6 +19,7 @@ Fixes applied vs v7.2:
   [M16] _parse_llm_json handles all fence/BOM variants from Gemini
   [M17] Disconnect debounce raised to 14 s (covers SIP re-register gaps)
   [M18] Egress set to audio_only=True for SIP-only rooms
+  [M19] Egress starts after session.start() once audio tracks are published
 """
 
 import logging
@@ -252,6 +253,83 @@ async def start_room_egress(room_name: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"[{room_name}] Failed to start egress: {e}")
         return None
+
+
+def _is_audio_publication(pub) -> bool:
+    kind = getattr(pub, "kind", None)
+    if kind is None:
+        return False
+    if hasattr(rtc, "TrackKind") and kind == rtc.TrackKind.KIND_AUDIO:
+        return True
+    name = getattr(kind, "name", None)
+    return name == "KIND_AUDIO" or str(kind).endswith("AUDIO")
+
+
+def _room_has_audio_tracks(room: rtc.Room) -> bool:
+    local = room.local_participant
+    if local is not None:
+        for pub in local.track_publications.values():
+            if _is_audio_publication(pub):
+                return True
+    for participant in room.remote_participants.values():
+        for pub in participant.track_publications.values():
+            if _is_audio_publication(pub):
+                return True
+    return False
+
+
+async def wait_for_room_audio_tracks(
+    room: rtc.Room,
+    room_name: str,
+    timeout: float = 25.0,
+) -> bool:
+    """Wait for agent or SIP audio to publish so room composite egress gets a start signal."""
+    if _room_has_audio_tracks(room):
+        logger.info(f"[{room_name}] Audio track(s) already published — ready for egress")
+        return True
+
+    ready = asyncio.Event()
+
+    @room.on("track_published")
+    def _on_track_published(publication, participant):
+        if _is_audio_publication(publication):
+            ready.set()
+
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=timeout)
+        logger.info(f"[{room_name}] Audio track published — ready for egress")
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{room_name}] Timed out after {timeout:.0f}s waiting for audio tracks before egress"
+        )
+        return False
+
+
+async def start_egress_after_audio(room: rtc.Room, state: "CallState") -> None:
+    """Start room composite egress only after the session publishes audio (fixes Start signal not received)."""
+    if state.egress_id or state._call_end_handled:
+        return
+    try:
+        await wait_for_room_audio_tracks(room, state.room_name)
+        if state._call_end_handled or state.egress_id:
+            return
+        await asyncio.sleep(0.75)
+        if state._call_end_handled or state.egress_id:
+            return
+        state.egress_id = await start_room_egress(state.room_name)
+        if state.egress_id:
+            logger.info(
+                f"[{state.room_name}] 🎬 Recording started — egress_id={state.egress_id}"
+            )
+        else:
+            logger.warning(
+                f"[{state.room_name}] ⚠️ Recording not started — call continues without recording"
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"[{state.room_name}] Failed to start egress after audio: {e}")
 
 
 async def stop_room_egress(egress_id: str, room_name: str):
@@ -926,6 +1004,21 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
         logger.info(f"[{state.room_name}] ✅ recording_ready webhook sent")
 
 
+async def _await_egress_start(state: CallState, timeout: float = 30.0) -> None:
+    """Let the background egress-start task finish before finalize at call end."""
+    task = state._recording_task
+    if task is None or task.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{state.room_name}] Egress start still pending after {timeout:.0f}s at call end"
+        )
+    except Exception as e:
+        logger.warning(f"[{state.room_name}] Egress start task failed: {e}")
+
+
 async def _handle_call_end(state: CallState):
     async with state._end_lock:
         if state._call_end_handled:
@@ -933,6 +1026,8 @@ async def _handle_call_end(state: CallState):
         state._call_end_handled = True
 
     _cancel_max_duration_timer(state)
+
+    await _await_egress_start(state)
 
     if state.egress_id and not state._recording_finalized:
         try:
@@ -1882,13 +1977,6 @@ async def entrypoint(ctx: JobContext):
     await send_webhook({"event": "call_started", **state.webhook_base()})
     state.started_at = datetime.datetime.now(datetime.timezone.utc)
 
-    # ── Start egress ──────────────────────────────────────────────────────────
-    state.egress_id = await start_room_egress(state.room_name)
-    if state.egress_id:
-        logger.info(f"[{state.room_name}] 🎬 Recording started — egress_id={state.egress_id}")
-    else:
-        logger.warning(f"[{state.room_name}] ⚠️ Recording not started — call continues without recording")
-
     # ── Session creation  [H11] close previous attempt on retry ──────────────
     session: Optional[AgentSession] = None
     for attempt in range(1, 4):
@@ -2003,6 +2091,11 @@ async def entrypoint(ctx: JobContext):
                 _enforce_max_call_duration(state, session),
                 name=f"max-duration-{state.room_name[:24]}",
             )
+            if state._recording_task is None or state._recording_task.done():
+                state._recording_task = asyncio.create_task(
+                    start_egress_after_audio(ctx.room, state),
+                    name=f"egress-start-{state.room_name[:24]}",
+                )
             logger.info(f"✅ Agent started successfully (max conversation: {MAX_CALL_SECONDS}s)")
 
             # [H11] Close previous zombie session after new one is running

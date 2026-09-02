@@ -8,6 +8,8 @@
     "docker:vps": "node scripts/vps-up.mjs",
     "docker:vps:up": "node scripts/vps-up.mjs",
     "docker:vps:up:agent": "node scripts/vps-up.mjs --agent",
+    "vps:reset": "node scripts/vps-reset.mjs --fix --yes",
+    "vps:reset:hard": "node scripts/vps-reset.mjs --hard",
     "agent:deploy": "docker compose --profile agent up -d --build agent",
     "agent:deploy:vps": "node scripts/deploy-agent-vps.mjs deploy --wait",
     "agent:logs:vps": "node scripts/deploy-agent-vps.mjs logs",

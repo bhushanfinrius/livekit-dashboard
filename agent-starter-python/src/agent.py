@@ -18,8 +18,9 @@ Fixes applied vs v7.2:
   [M15] Date/time constants computed per-call inside entrypoint, not at import
   [M16] _parse_llm_json handles all fence/BOM variants from Gemini
   [M17] Disconnect debounce raised to 14 s (covers SIP re-register gaps)
-  [M18] Egress set to audio_only=True for SIP-only rooms
-  [M19] Egress starts after session.start() once audio tracks are published
+  [M18] SIP recordings use track composite (not room composite speaker layout)
+  [M19] Egress starts after session.start() once SIP/agent audio tracks publish
+  [M20] Dual track egress: caller (primary .ogg) + agent (_agent.ogg) when both exist
 """
 
 import logging
@@ -213,46 +214,27 @@ async def disconnect_sip_participant(room_name: str, identity: str):
         logger.error(f"[{room_name}] Failed to remove SIP participant: {e}")
 
 
+def _is_sip_callee_participant(participant: rtc.RemoteParticipant) -> bool:
+    if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+        return True
+    identity = (participant.identity or "").lower()
+    if any(t in identity for t in ("sip", "caller", "prospect", "test_")):
+        return True
+    digits = re.sub(r"\D", "", participant.identity or "")
+    return len(digits) >= 10
+
+
 # ════════════════════════════════════════════════════════════════════════════════
-# EGRESS  [M18] audio_only=True for SIP rooms
+# EGRESS  [M18–M20] track composite on SIP / agent audio tracks
 # ════════════════════════════════════════════════════════════════════════════════
-async def start_room_egress(room_name: str) -> Optional[str]:
-    try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-
-        # [C1] Single creds path
-        gcs_creds_json = ""
-        if os.path.exists(GCS_SERVICE_ACCOUNT_JSON):
-            with open(GCS_SERVICE_ACCOUNT_JSON) as f:
-                gcs_creds_json = f.read()
-        else:
-            logger.warning(f"[{room_name}] GCS creds not found: {GCS_SERVICE_ACCOUNT_JSON} — recording skipped")
-            await lkapi.aclose()
-            return None
-
-        output_filepath = f"recordings/{AGENT_NAME}/{room_name}/{room_name}{RECORDING_FILE_EXT}"
-        from livekit.protocol import egress as egress_proto
-
-        request = egress_proto.RoomCompositeEgressRequest(
-            room_name=room_name,
-            layout="speaker",
-            audio_only=True,           # [M18] SIP-only calls have no video
-            file=egress_proto.EncodedFileOutput(
-                filepath=output_filepath,
-                gcp=egress_proto.GCPUpload(
-                    credentials=gcs_creds_json,
-                    bucket=GCS_BUCKET_NAME,
-                ),
-            ),
+def _load_gcs_creds_json(room_name: str) -> Optional[str]:
+    if not os.path.exists(GCS_SERVICE_ACCOUNT_JSON):
+        logger.warning(
+            f"[{room_name}] GCS creds not found: {GCS_SERVICE_ACCOUNT_JSON} — recording skipped"
         )
-        result    = await lkapi.egress.start_room_composite_egress(request)
-        await lkapi.aclose()
-        egress_id = result.egress_id
-        logger.info(f"[{room_name}] 🎬 Egress started — egress_id={egress_id} → gs://{GCS_BUCKET_NAME}/{output_filepath}")
-        return egress_id
-    except Exception as e:
-        logger.error(f"[{room_name}] Failed to start egress: {e}")
         return None
+    with open(GCS_SERVICE_ACCOUNT_JSON) as f:
+        return f.read()
 
 
 def _is_audio_publication(pub) -> bool:
@@ -265,67 +247,159 @@ def _is_audio_publication(pub) -> bool:
     return name == "KIND_AUDIO" or str(kind).endswith("AUDIO")
 
 
-def _room_has_audio_tracks(room: rtc.Room) -> bool:
-    local = room.local_participant
-    if local is not None:
-        for pub in local.track_publications.values():
-            if _is_audio_publication(pub):
-                return True
+def _audio_track_sid(publication) -> Optional[str]:
+    sid = getattr(publication, "sid", None)
+    return sid.strip() if isinstance(sid, str) and sid.strip() else None
+
+
+def _find_sip_audio_track_sid(room: rtc.Room) -> Optional[str]:
     for participant in room.remote_participants.values():
+        if not _is_sip_callee_participant(participant):
+            continue
         for pub in participant.track_publications.values():
             if _is_audio_publication(pub):
-                return True
-    return False
+                sid = _audio_track_sid(pub)
+                if sid:
+                    return sid
+    return None
 
 
-async def wait_for_room_audio_tracks(
+def _find_local_audio_track_sid(room: rtc.Room) -> Optional[str]:
+    local = room.local_participant
+    if local is None:
+        return None
+    for pub in local.track_publications.values():
+        if _is_audio_publication(pub):
+            sid = _audio_track_sid(pub)
+            if sid:
+                return sid
+    return None
+
+
+async def _wait_for_audio_track_sid(
     room: rtc.Room,
     room_name: str,
-    timeout: float = 25.0,
-) -> bool:
-    """Wait for agent or SIP audio to publish so room composite egress gets a start signal."""
-    if _room_has_audio_tracks(room):
-        logger.info(f"[{room_name}] Audio track(s) already published — ready for egress")
-        return True
+    *,
+    prefer_sip: bool,
+    timeout: float = 30.0,
+) -> Optional[str]:
+    if prefer_sip:
+        sid = _find_sip_audio_track_sid(room)
+        if sid:
+            logger.info(f"[{room_name}] SIP audio track ready — {sid}")
+            return sid
+    else:
+        sid = _find_local_audio_track_sid(room)
+        if sid:
+            logger.info(f"[{room_name}] Agent audio track ready — {sid}")
+            return sid
 
-    ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[str] = loop.create_future()
 
     @room.on("track_published")
     def _on_track_published(publication, participant):
-        if _is_audio_publication(publication):
-            ready.set()
+        if fut.done() or not _is_audio_publication(publication):
+            return
+        if prefer_sip:
+            if not isinstance(participant, rtc.RemoteParticipant):
+                return
+            if not _is_sip_callee_participant(participant):
+                return
+        elif participant is not room.local_participant:
+            return
+        track_sid = _audio_track_sid(publication)
+        if track_sid:
+            fut.set_result(track_sid)
 
     try:
-        await asyncio.wait_for(ready.wait(), timeout=timeout)
-        logger.info(f"[{room_name}] Audio track published — ready for egress")
-        return True
+        track_sid = await asyncio.wait_for(fut, timeout=timeout)
+        label = "SIP" if prefer_sip else "agent"
+        logger.info(f"[{room_name}] {label} audio track published — {track_sid}")
+        return track_sid
     except asyncio.TimeoutError:
-        logger.warning(
-            f"[{room_name}] Timed out after {timeout:.0f}s waiting for audio tracks before egress"
+        label = "SIP" if prefer_sip else "agent"
+        logger.warning(f"[{room_name}] Timed out waiting for {label} audio track ({timeout:.0f}s)")
+        return None
+
+
+async def start_track_composite_egress(
+    room_name: str,
+    audio_track_id: str,
+    *,
+    filepath_suffix: str = "",
+) -> Optional[str]:
+    try:
+        gcs_creds_json = _load_gcs_creds_json(room_name)
+        if not gcs_creds_json:
+            return None
+
+        output_filepath = (
+            f"recordings/{AGENT_NAME}/{room_name}/{room_name}{filepath_suffix}{RECORDING_FILE_EXT}"
         )
-        return False
+        from livekit.protocol import egress as egress_proto
+
+        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        request = egress_proto.TrackCompositeEgressRequest(
+            room_name=room_name,
+            audio_track_id=audio_track_id,
+            file=egress_proto.EncodedFileOutput(
+                filepath=output_filepath,
+                gcp=egress_proto.GCPUpload(
+                    credentials=gcs_creds_json,
+                    bucket=GCS_BUCKET_NAME,
+                ),
+            ),
+        )
+        result = await lkapi.egress.start_track_composite_egress(request)
+        await lkapi.aclose()
+        egress_id = result.egress_id
+        logger.info(
+            f"[{room_name}] 🎬 Track egress started — egress_id={egress_id} "
+            f"track={audio_track_id} → gs://{GCS_BUCKET_NAME}/{output_filepath}"
+        )
+        return egress_id
+    except Exception as e:
+        logger.error(f"[{room_name}] Failed to start track egress ({audio_track_id}): {e}")
+        return None
 
 
 async def start_egress_after_audio(room: rtc.Room, state: "CallState") -> None:
-    """Start room composite egress only after the session publishes audio (fixes Start signal not received)."""
+    """Start track composite egress on SIP audio (and agent audio when available)."""
     if state.egress_id or state._call_end_handled:
         return
     try:
-        await wait_for_room_audio_tracks(room, state.room_name)
+        prefer_sip = not state.is_console
+        primary_sid = await _wait_for_audio_track_sid(
+            room, state.room_name, prefer_sip=prefer_sip, timeout=30.0
+        )
+        if not primary_sid and prefer_sip:
+            primary_sid = await _wait_for_audio_track_sid(
+                room, state.room_name, prefer_sip=False, timeout=10.0
+            )
+        if state._call_end_handled or state.egress_id or not primary_sid:
+            if not primary_sid:
+                logger.warning(f"[{state.room_name}] ⚠️ No audio track for recording — call continues")
+            return
+
+        await asyncio.sleep(0.5)
         if state._call_end_handled or state.egress_id:
             return
-        await asyncio.sleep(0.75)
-        if state._call_end_handled or state.egress_id:
+
+        state.egress_id = await start_track_composite_egress(state.room_name, primary_sid)
+        if not state.egress_id:
+            logger.warning(f"[{state.room_name}] ⚠️ Recording not started — call continues without recording")
             return
-        state.egress_id = await start_room_egress(state.room_name)
-        if state.egress_id:
-            logger.info(
-                f"[{state.room_name}] 🎬 Recording started — egress_id={state.egress_id}"
+
+        agent_sid = _find_local_audio_track_sid(room)
+        if prefer_sip and agent_sid and agent_sid != primary_sid:
+            agent_egress_id = await start_track_composite_egress(
+                state.room_name,
+                agent_sid,
+                filepath_suffix="_agent",
             )
-        else:
-            logger.warning(
-                f"[{state.room_name}] ⚠️ Recording not started — call continues without recording"
-            )
+            if agent_egress_id:
+                state.extra_egress_ids.append(agent_egress_id)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -447,6 +521,7 @@ def _gcs_recording_object_path(room_name: str, ext: Optional[str] = None) -> str
 def _gcs_recording_object_candidates(room_name: str) -> list[str]:
     return [
         _gcs_recording_object_path(room_name, RECORDING_FILE_EXT),
+        _gcs_recording_object_path(room_name, "_agent" + RECORDING_FILE_EXT),
         _gcs_recording_object_path(room_name, ".mp4"),
     ]
 
@@ -895,6 +970,7 @@ class CallState:
         self.forced_agent_notes: Optional[str]        = None
         self.session:          Optional[AgentSession] = None
         self.egress_id:        Optional[str]          = None
+        self.extra_egress_ids: list[str]             = []
         self.recording_url:    Optional[str]          = None
 
         # State flags
@@ -968,6 +1044,8 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
         if state._recording_finalized:
             return
         try:
+            for extra_id in state.extra_egress_ids:
+                await stop_room_egress(extra_id, state.room_name)
             await stop_room_egress(state.egress_id, state.room_name)
             egress_object_path = await _wait_for_egress_complete(
                 state.egress_id, state.room_name, timeout=45.0
@@ -1803,16 +1881,6 @@ async def _check_and_hangup_voicemail(state: CallState, text: str) -> None:
     if not _is_voicemail_greeting(state._vm_text_buffer):
         return
     await _end_call_as_voicemail_detected(state)
-
-
-def _is_sip_callee_participant(participant: rtc.RemoteParticipant) -> bool:
-    if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
-        return True
-    identity = (participant.identity or "").lower()
-    if any(t in identity for t in ("sip", "caller", "prospect", "test_")):
-        return True
-    digits = re.sub(r"\D", "", participant.identity or "")
-    return len(digits) >= 10
 
 
 def _sip_participant_identity(ctx: JobContext) -> Optional[str]:

@@ -139,6 +139,6 @@ Never rotate `ENCRYPTION_KEY` on soft reset. Only set `AUTH_SECRET` / `ENCRYPTIO
 | Credit check rejection | `SKIP_CREDIT_CHECK=1` in `.env.local` (auto-set on deploy) |
 | Port 7880 conflict | Stop stray `lumivoice-sfu` or other LiveKit containers |
 | Wrong LiveKit URL in agent | Must be `ws://livekit:7880` inside Docker |
-| Egress aborted: Start signal not received | Redeploy agent after pull (egress starts after audio publishes) |
+| Egress aborted: Start signal not received | Redeploy agent — uses **track composite** on SIP audio (not room composite) |
 
 Full guide: [VPS-DEPLOY.md](./VPS-DEPLOY.md) · Performance: [PERFORMANCE.md](./PERFORMANCE.md)

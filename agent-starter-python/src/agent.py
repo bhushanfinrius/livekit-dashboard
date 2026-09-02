@@ -21,6 +21,8 @@ Fixes applied vs v7.2:
   [M18] SIP recordings use track composite (not room composite speaker layout)
   [M19] Egress starts after session.start() once SIP/agent audio tracks publish
   [M20] Dual track egress: caller (primary .ogg) + agent (_agent.ogg) when both exist
+  [M21] end_call blocked on go-ahead phrases + minimum turns/duration before hangup
+  [M22] AgentSession closed before room delete to reduce engine-is-closed log noise
 """
 
 import logging
@@ -106,6 +108,32 @@ RECORDING_FINALIZE_TIMEOUT  = float(os.getenv("RECORDING_FINALIZE_TIMEOUT", "90"
 _VOICEMAIL_AGENT_NOTES      = "Voice mail detected"
 
 MAX_CALL_SECONDS      = int(os.getenv("MAX_CALL_SECONDS", "300"))
+END_CALL_MIN_CONV_SECONDS = float(os.getenv("END_CALL_MIN_CONV_SECONDS", "15"))
+END_CALL_MIN_TURNS        = int(os.getenv("END_CALL_MIN_TURNS", "4"))
+
+# Prospect phrases that mean "keep talking" — never hang up on these.
+_CONTINUE_INVITE_RE = re.compile(
+    r"(?i)(जी\s*बोल(?:िए|ो|iye)|"
+    r"बोल(?:िए|ो|iye)|"
+    r"haan\s*bol(?:iye|o)|"
+    r"go\s*ahead|"
+    r"yes\s*,?\s*(go\s*on|speak|tell\s*me)|"
+    r"^\s*hello[\.\!]?\s*$|"
+    r"^\s*hi[\.\!]?\s*$|"
+    r"tell\s+me|"
+    r"continue|"
+    r"और\s*बत(?:ाइए|ाओ)|"
+    r"sun(?:o|iye)|"
+    r"^\s*ह(?:ां|ाँ|aan)\s*[\.\!]?\s*$)"
+)
+_NOT_INTERESTED_RE = re.compile(
+    r"(?i)(not\s+interested|don't\s+call|do\s+not\s+call|stop\s+calling|"
+    r"no\s+thanks|remove\s+my\s+number|"
+    r"interested\s+nahi|nahi\s+chahiye|"
+    r"बाद\s*म(?:ै|е)?\s*call|"
+    r"call\s*mat\s*karo|"
+    r"don't\s+want|not\s+now)"
+)
 
 # [C1] Single env var for GCS credentials used everywhere
 GCS_SERVICE_ACCOUNT_JSON = os.getenv("GCS_SERVICE_ACCOUNT_JSON", "livekit-storage.json")
@@ -1210,6 +1238,7 @@ async def _complete_call_shutdown(
     async def _run() -> None:
         try:
             await _handle_call_end(state)
+            await _close_agent_session(state)
             await hangup_call(delay_seconds=delay_seconds)
             logger.info(f"[{state.room_name}] ✅ Call shutdown complete")
         except Exception as e:
@@ -1674,6 +1703,7 @@ Then call end_call.
 - Never guess scrap valuation amounts, tax/discount percentages, or government benefit figures.
 - Never state a national legal threshold as universal if it's actually a city/state-specific rule (e.g., NCR plying bans vs. the central Scrappage Policy's fitness-based criteria) — this is a compliance and trust risk.
 - Never call end_call before validating name + vehicle details + contact channel details unless the prospect explicitly hangs up.
+- Never call end_call when the prospect says go-ahead / listening phrases: "जी बोलिए", "hello", "haan boliye", "go ahead", "tell me", "continue", "suniye" — those mean KEEP TALKING.
 - Never break the **Strict Scope Protection Rule** — do not assist with any information outside of Mahindra Accelo parameters.
 
 ---
@@ -1693,6 +1723,68 @@ If these are blank, ask for them naturally instead of assuming.
 """
 
 
+def _last_prospect_utterance(state: CallState) -> str:
+    for line in reversed(state.transcript_parts):
+        if line.startswith("Prospect:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def looks_like_continue_invite(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    return bool(_CONTINUE_INVITE_RE.search(cleaned))
+
+
+def looks_like_not_interested(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    return bool(_NOT_INTERESTED_RE.search(cleaned))
+
+
+def end_call_allowed(state: CallState) -> tuple[bool, str]:
+    """Return (allowed, reason). Blocks premature Gemini end_call on go-ahead phrases."""
+    if state.callee_hung_up or state.amd_voicemail:
+        return True, "system hangup"
+
+    last = _last_prospect_utterance(state)
+    if last and looks_like_continue_invite(last):
+        return False, f"prospect asked you to continue ({last[:80]})"
+
+    turns = len(state.transcript_parts)
+    conv = state.conversation_duration_seconds()
+
+    if last and looks_like_not_interested(last) and turns >= 2:
+        return True, "prospect declined"
+
+    if conv < END_CALL_MIN_CONV_SECONDS:
+        return False, (
+            f"conversation only {conv}s "
+            f"(minimum {END_CALL_MIN_CONV_SECONDS:.0f}s before end_call)"
+        )
+    if turns < END_CALL_MIN_TURNS:
+        return False, (
+            f"only {turns} transcript turns "
+            f"(minimum {END_CALL_MIN_TURNS} before end_call)"
+        )
+
+    return True, "minimum conversation reached"
+
+
+async def _close_agent_session(state: CallState) -> None:
+    session = state.session
+    if session is None:
+        return
+    state.session = None
+    try:
+        await session.aclose()
+        logger.info(f"[{state.room_name}] Agent session closed")
+    except Exception as e:
+        logger.warning(f"[{state.room_name}] Agent session close: {e}")
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # AGENT CLASS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1708,7 +1800,14 @@ class LumiverseSalesAgent(Agent):
         if self._state.is_inbound:
             await _greet_prospect(self.session, self._state)
 
-    @function_tool
+    @function_tool(
+        name="end_call",
+        description=(
+            "Hang up ONLY after name + mobile + city are collected and confirmed, "
+            "OR when the prospect clearly says not interested / stop calling / goodbye. "
+            "NEVER use when they say go ahead, जी बोलिए, hello, haan boliye, or tell me."
+        ),
+    )
     async def end_call(self, ctx: RunContext):
         if (
             self._state._call_end_handled
@@ -1717,8 +1816,14 @@ class LumiverseSalesAgent(Agent):
             or (self._state._shutdown_task and not self._state._shutdown_task.done())
         ):
             logger.info("🛑 end_call skipped — shutdown already in progress")
-            return
-        logger.info("🛑 end_call triggered")
+            return "Shutdown already in progress."
+
+        allowed, reason = end_call_allowed(self._state)
+        if not allowed:
+            logger.warning(f"🛑 end_call blocked — {reason}")
+            return f"Do not hang up yet: {reason}. Continue the pitch."
+
+        logger.info(f"🛑 end_call triggered — {reason}")
         await ctx.wait_for_playout()
         await asyncio.sleep(0.5)
         await _graceful_call_shutdown(
@@ -1727,6 +1832,7 @@ class LumiverseSalesAgent(Agent):
             skip_farewell=True,
             reason="end_call_tool",
         )
+        return "Call ending."
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2286,6 +2392,7 @@ async def entrypoint(ctx: JobContext):
             )
         except asyncio.TimeoutError:
             logger.error(f"[{state.room_name}] Shutdown timed out — webhooks may be incomplete")
+        await _close_agent_session(state)
         disconnected.set()
         logger.info(f"[{state.room_name}] Job exiting — call fully processed")
 

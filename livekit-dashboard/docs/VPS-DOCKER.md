@@ -109,10 +109,31 @@ See [VPS-AGENT-COMMANDS.md](./VPS-AGENT-COMMANDS.md) for logs, status, and bash-
 
 Legacy manual copy (`cp livekit.vps.example.yaml livekit.yaml`) still works but is **not** needed when using `npm run docker:vps:up`.
 
+## Reset / cleanup (duplicate projects, wrong URLs)
+
+If you created multiple `demo` projects or the dashboard shows **inferred** sessions with 0 participants, run:
+
+```bash
+npm run vps:reset
+# or: bash scripts/vps-reset.sh --fix --yes
+# keep a specific project: node scripts/vps-reset.mjs --fix --keep-project YOUR_PROJECT_ID --yes
+```
+
+This keeps **one** project (most webhook history by default), deletes duplicate projects, sets `livekitUrl` to `http://127.0.0.1:7880`, patches agent `.env.local` (`DECK_TRANSCRIPT_URL`, LiveKit keys, `SKIP_CREDIT_CHECK=1`), regenerates `livekit.runtime.yaml`, and restarts stack + agent.
+
+**Nuclear option** (wipes DB — sign up again):
+
+```bash
+npm run vps:reset:hard
+```
+
+Never rotate `ENCRYPTION_KEY` on soft reset. Only set `AUTH_SECRET` / `ENCRYPTION_KEY` once in `.env`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
+| Duplicate demo projects / empty Sessions | `npm run vps:reset` |
 | Calls drop after ~10–20s | Confirm `LIVEKIT_PUBLIC_IP` matches VPS public IP; UDP 50000–50100 + 3478 open |
 | `solvoxai.json` not found | Place JSON in `agent-starter-python/`; redeploy agent |
 | Credit check rejection | `SKIP_CREDIT_CHECK=1` in `.env.local` (auto-set on deploy) |

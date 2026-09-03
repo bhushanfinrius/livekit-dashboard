@@ -84,11 +84,74 @@ DECK_TRANSCRIPT_URL   = os.getenv("DECK_TRANSCRIPT_URL", "").strip()
 DECK_TRANSCRIPT_SECRET = os.getenv("DECK_TRANSCRIPT_SECRET", "").strip()
 GOOGLE_API_KEY        = os.getenv("GOOGLE_API_KEY",        "")
 GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007").strip() or "solvox-ai-007"
-# gemini-live native audio is served from us-central1 (same as CTF_dynamic.py).
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1").strip() or "us-central1"
-# Pin ADC so Vertex does not pick a different project from the credentials JSON.
-os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
-os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
+GEMINI_LIVE_VERTEX_MODEL = "gemini-live-2.5-flash-native-audio"
+GEMINI_LIVE_API_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+_REALTIME_VOICE_INSTRUCTIONS = """
+Speak only in natural Indian English accent.
+Never use an American accent.
+Use Indian pronunciation, Indian rhythm, and Indian conversational style.
+Sound like a professional Indian female caller from Mumbai or Pune.
+Use Hinglish naturally when the user speaks Hindi.
+"""
+
+
+def uses_gemini_developer_api(api_key: str | None = None) -> bool:
+    """AIza keys are Gemini Developer API keys. Vertex Live + those keys hit project-ed86b9c7 and 1008."""
+    if _env_flag("GOOGLE_GENAI_USE_VERTEXAI"):
+        return False
+    key = (api_key if api_key is not None else GOOGLE_API_KEY) or ""
+    key = key.strip() or (os.getenv("GEMINI_API_KEY") or "").strip()
+    return key.startswith("AIza")
+
+
+def build_google_realtime_model() -> google.realtime.RealtimeModel:
+    common = {
+        "voice": "Sulafat",
+        "temperature": 0.65,
+        "modalities": ["AUDIO"],
+        "instructions": _REALTIME_VOICE_INSTRUCTIONS,
+    }
+    if uses_gemini_developer_api():
+        logger.info("Gemini Live → Developer API model=%s", GEMINI_LIVE_API_MODEL)
+        return google.realtime.RealtimeModel(
+            model=GEMINI_LIVE_API_MODEL,
+            api_key=GOOGLE_API_KEY,
+            vertexai=False,
+            **common,
+        )
+    logger.info(
+        "Gemini Live → Vertex %s/%s model=%s",
+        GOOGLE_CLOUD_PROJECT,
+        GOOGLE_CLOUD_LOCATION,
+        GEMINI_LIVE_VERTEX_MODEL,
+    )
+    os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
+    os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
+    os.environ.pop("GOOGLE_API_KEY", None)
+    os.environ.pop("GEMINI_API_KEY", None)
+    return google.realtime.RealtimeModel(
+        model=GEMINI_LIVE_VERTEX_MODEL,
+        vertexai=True,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+        **common,
+    )
+
+
+def _google_analysis_client():
+    from google import genai as google_genai
+
+    if uses_gemini_developer_api():
+        return google_genai.Client(api_key=GOOGLE_API_KEY, vertexai=False)
+    os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
+    os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
+    return google_genai.Client(
+        vertexai=True,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+    )
+
 
 AGENT_NAME            = (os.getenv("AGENT_NAME") or "CTF-Agent").strip() or "CTF-Agent"
 LIVEKIT_URL           = os.getenv("LIVEKIT_URL",        "")
@@ -1295,12 +1358,7 @@ async def analyse_call(
     )
 
     def _run_gemini() -> dict:
-        from google import genai as google_genai
-        client = google_genai.Client(
-            vertexai=True,
-            project=GOOGLE_CLOUD_PROJECT,
-            location=GOOGLE_CLOUD_LOCATION,
-        )
+        client = _google_analysis_client()
         response = client.models.generate_content(
             model=ANALYSIS_LLM_MODEL,
             contents=user_content,
@@ -2635,22 +2693,7 @@ async def entrypoint(ctx: JobContext):
         prev_session = session      # [H11] close zombie session from failed attempt
         try:
             session = AgentSession(
-                llm=google.realtime.RealtimeModel(
-                    model="gemini-live-2.5-flash-native-audio",
-                    voice="Sulafat",
-                    temperature=0.65,
-                    modalities=["AUDIO"],
-                    vertexai=True,
-                    project=GOOGLE_CLOUD_PROJECT,
-                    location=GOOGLE_CLOUD_LOCATION,
-                    instructions="""
-                    Speak only in natural Indian English accent.
-                    Never use an American accent.
-                    Use Indian pronunciation, Indian rhythm, and Indian conversational style.
-                    Sound like a professional Indian female caller from Mumbai or Pune.
-                    Use Hinglish naturally when the user speaks Hindi.
-                    """,
-                ),
+                llm=build_google_realtime_model(),
             )
 
             # ── Transcript tracking ──────────────────────────────────────────

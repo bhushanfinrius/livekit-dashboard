@@ -107,8 +107,10 @@ services:
     environment:
       DATABASE_URL: postgresql://deck:deck@postgres:5432/deck
       AUTH_URL: ${AUTH_URL:-http://localhost:3000}
-      AUTH_SECRET: ${AUTH_SECRET:-deck-dev-secret-replace-before-production-use-32b}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-deck-dev-encryption-key-replace-before-prod32}
+      # No fallbacks: `npm run livekit:keys` generates these into .env. A published
+      # default would silently become the production secret.
+      AUTH_SECRET: ${AUTH_SECRET:?run npm run livekit:keys to generate AUTH_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run npm run livekit:keys to generate ENCRYPTION_KEY in .env}
       # Server-side SDK calls the Compose service. The browser still uses 127.0.0.1:7880.
       LIVEKIT_INTERNAL_URL: http://livekit:7880
       DECK_IN_COMPOSE: "1"

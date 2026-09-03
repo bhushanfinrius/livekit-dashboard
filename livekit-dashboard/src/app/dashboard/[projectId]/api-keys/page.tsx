@@ -2,8 +2,7 @@ import type { Metadata } from "next";
 import { auth } from "@/auth";
 import { EmptyState } from "@/components/empty-state";
 import { ApiKeysView } from "@/components/keys/api-keys-view";
-import { decryptSecret } from "@/lib/crypto/secret";
-import { prisma } from "@/lib/db";
+import { listProjectApiKeys } from "@/lib/keys/project-keys";
 import { getMembership } from "@/lib/projects";
 
 export const metadata: Metadata = {
@@ -32,22 +31,10 @@ export default async function ApiKeysPage({
     );
   }
 
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: {
-      name: true,
-      livekitApiKey: true,
-      livekitApiSecret: true,
-      createdAt: true,
-      memberships: {
-        where: { role: "owner" },
-        take: 1,
-        select: { user: { select: { email: true, name: true } } },
-      },
-    },
-  });
+  const isOwner = membership.role === "owner";
+  const keys = await listProjectApiKeys(projectId, isOwner);
 
-  if (!project) {
+  if (!keys) {
     return (
       <EmptyState
         title="API keys are not available"
@@ -56,22 +43,5 @@ export default async function ApiKeysPage({
     );
   }
 
-  const isOwner = membership.role === "owner";
-  const owner = project.memberships[0]?.user;
-
-  return (
-    <ApiKeysView
-      projectId={projectId}
-      canManage={isOwner}
-      initialKeys={[
-        {
-          apiKey: project.livekitApiKey,
-          apiSecret: isOwner ? decryptSecret(project.livekitApiSecret) : null,
-          description: project.name,
-          owner: owner?.name || owner?.email || "Owner",
-          issuedAt: project.createdAt.toISOString(),
-        },
-      ]}
-    />
-  );
+  return <ApiKeysView projectId={projectId} canManage={isOwner} initialKeys={keys} />;
 }

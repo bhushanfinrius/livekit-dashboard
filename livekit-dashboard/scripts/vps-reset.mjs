@@ -7,17 +7,14 @@
  *   npm run vps:reset:hard
  */
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
-import {
-  LIVEKIT_CONFIG_TEMPLATE,
-  loadDotEnv,
-  renderLivekitRuntimeConfig,
-  VPS_COMPOSE_FILES,
-} from "./vps-lib.mjs";
+import { loadKeyStore } from "./keys-lib.mjs";
+import { loadDotEnv, renderLivekitRuntimeConfig, VPS_COMPOSE_FILES } from "./vps-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -47,15 +44,13 @@ function psql(sql) {
   );
 }
 
-function readYamlKeys() {
-  const template = path.join(ROOT, LIVEKIT_CONFIG_TEMPLATE);
-  const text = readFileSync(template, "utf8");
-  const block = text.match(/^keys:\n(?:\s+.+\n)+/m)?.[0] ?? "";
-  const entry = block.match(/^\s{2}(\S+):\s+"([^"]+)"/m);
-  if (!entry) {
-    throw new Error(`Could not parse LiveKit keys from ${LIVEKIT_CONFIG_TEMPLATE}`);
+/** The first pool pair — the infra pair is reserved for sip/egress/webhooks. */
+function readProjectKeyPair() {
+  const store = loadKeyStore(ROOT);
+  if (!store?.pool?.length) {
+    throw new Error("No LiveKit key pool. Run: npm run livekit:keys");
   }
-  return { apiKey: entry[1], apiSecret: entry[2] };
+  return store.pool[0];
 }
 
 function upsertEnvLine(content, key, value) {
@@ -147,8 +142,10 @@ function patchAgentEnv(keepId, deckEnv, keys) {
     return;
   }
 
-  const transcriptSecret =
-    deckEnv.DECK_TRANSCRIPT_SECRET?.trim() || "deck-dev-transcript-secret-32chars!!";
+  const transcriptSecret = deckEnv.DECK_TRANSCRIPT_SECRET?.trim();
+  if (!transcriptSecret) {
+    throw new Error("Set DECK_TRANSCRIPT_SECRET in .env (npm run livekit:keys generates one).");
+  }
 
   patchEnvFile(envLocal, {
     LIVEKIT_URL: "ws://livekit:7880",
@@ -180,11 +177,16 @@ function patchDeckEnv() {
   }
 
   const env = loadDotEnv(ROOT);
+  if (!env.LIVEKIT_PUBLIC_IP?.trim()) {
+    throw new Error("Set LIVEKIT_PUBLIC_IP in .env to this VPS's public IP or hostname.");
+  }
+  if (!env.AUTH_URL?.trim()) {
+    throw new Error("Set AUTH_URL in .env to the URL this dashboard is served from.");
+  }
+
   const updates = {};
-  if (!env.LIVEKIT_PUBLIC_IP?.trim()) updates.LIVEKIT_PUBLIC_IP = "103.191.209.120";
-  if (!env.AUTH_URL?.trim()) updates.AUTH_URL = "https://lumivoice.solvox.ai";
   if (!env.DECK_TRANSCRIPT_SECRET?.trim()) {
-    updates.DECK_TRANSCRIPT_SECRET = "deck-vps-transcript-secret-32chars!!";
+    updates.DECK_TRANSCRIPT_SECRET = randomBytes(32).toString("base64");
   }
 
   if (Object.keys(updates).length > 0) {
@@ -224,7 +226,7 @@ function redeployAgent(agentName, entrypoint) {
 }
 
 function printSummary(keepId, deckEnv) {
-  const publicIp = deckEnv.LIVEKIT_PUBLIC_IP?.trim() || "103.191.209.120";
+  const publicIp = deckEnv.LIVEKIT_PUBLIC_IP.trim();
   const base = deckEnv.AUTH_URL?.trim() || `http://${publicIp}:3000`;
   console.log(`
 ✅ VPS reset complete.
@@ -240,9 +242,9 @@ Verify webhook project count:
 
 async function runFix(opts) {
   const deckEnv = patchDeckEnv();
-  const keys = readYamlKeys();
+  const keys = readProjectKeyPair();
   const keepId = pickKeepProject(opts.keepProject);
-  const publicLivekit = publicLivekitWsUrl(deckEnv.AUTH_URL, deckEnv.LIVEKIT_PUBLIC_IP?.trim() || "103.191.209.120");
+  const publicLivekit = publicLivekitWsUrl(deckEnv.AUTH_URL, deckEnv.LIVEKIT_PUBLIC_IP.trim());
 
   if (!(await confirm(`Delete all projects except ${keepId} and realign creds?`, opts.yes))) {
     console.log("Aborted.");
@@ -264,8 +266,7 @@ async function runHard(opts) {
 
   patchDeckEnv();
   const env = loadDotEnv(ROOT);
-  const publicIp = env.LIVEKIT_PUBLIC_IP?.trim() || "103.191.209.120";
-  renderLivekitRuntimeConfig(ROOT, publicIp);
+  renderLivekitRuntimeConfig(ROOT, env.LIVEKIT_PUBLIC_IP.trim());
 
   console.log("\n→ Stopping stack and removing volumes…");
   sh(`${COMPOSE} --profile agent down -v`, { inherit: true });

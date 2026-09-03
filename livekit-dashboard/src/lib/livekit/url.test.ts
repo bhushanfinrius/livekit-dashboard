@@ -3,6 +3,8 @@ import {
   applyLocalLiveKitKeys,
   canRotateLocalLiveKitKeys,
   readKeysFromLiveKitYaml,
+  readLiveKitKeyPool,
+  revokeLocalLiveKitKey,
   withLiveKitServerKeys,
   withSipKeys,
 } from "@/lib/livekit/apply-local-keys";
@@ -87,13 +89,12 @@ describe("livekitCliProjectAdd", () => {
   });
 });
 
+const NEW_PAIR = { apiKey: "deck_new", apiSecret: "newsecret_newsecret_newsecret_n32" };
+
 describe("livekit YAML key rewrite", () => {
   it("replaces keys in LF files", () => {
-    const next = withLiveKitServerKeys(SAMPLE_YAML, "deck_new", "newsecret_newsecret_newsecret_n32");
-    expect(readKeysFromLiveKitYaml(next)).toEqual({
-      apiKey: "deck_new",
-      apiSecret: "newsecret_newsecret_newsecret_n32",
-    });
+    const next = withLiveKitServerKeys(SAMPLE_YAML, [NEW_PAIR]);
+    expect(readKeysFromLiveKitYaml(next)).toEqual(NEW_PAIR);
     expect(next).toContain("api_key: deck_new");
   });
 
@@ -101,12 +102,25 @@ describe("livekit YAML key rewrite", () => {
     const crlf = SAMPLE_YAML.replaceAll("\n", "\r\n");
     const parsed = readKeysFromLiveKitYaml(crlf);
     expect(parsed?.apiKey).toBe("deck_old");
-    const next = withLiveKitServerKeys(crlf, "deck_new", "newsecret_newsecret_newsecret_n32");
+    const next = withLiveKitServerKeys(crlf, [NEW_PAIR]);
     expect(next).not.toContain("\r");
-    expect(readKeysFromLiveKitYaml(next)).toEqual({
-      apiKey: "deck_new",
-      apiSecret: "newsecret_newsecret_newsecret_n32",
-    });
+    expect(readKeysFromLiveKitYaml(next)).toEqual(NEW_PAIR);
+  });
+
+  it("writes a multi-entry pool and points webhooks at the infra pair", () => {
+    const infra = { apiKey: "deck_infra_1", apiSecret: "infrasecret_infrasecret_infra_32" };
+    const pool = [NEW_PAIR, { apiKey: "deck_two", apiSecret: "twosecret_twosecret_twosecret_32" }];
+    const next = withLiveKitServerKeys(SAMPLE_YAML, [infra, ...pool], infra.apiKey);
+
+    expect(next).toContain("api_key: deck_infra_1");
+    expect(readLiveKitKeyPool(next)).toEqual({ infra, pool });
+  });
+
+  it("treats the first entry as infra when webhook.api_key is absent", () => {
+    const yaml = 'keys:\n  deck_a: "a_secret_a_secret_a_secret_a_32"\n  deck_b: "b_secret_b_secret_b_secret_b_32"\n';
+    const { infra, pool } = readLiveKitKeyPool(yaml);
+    expect(infra?.apiKey).toBe("deck_a");
+    expect(pool.map((pair) => pair.apiKey)).toEqual(["deck_b"]);
   });
 
   it("updates sip.yaml api_key and api_secret", () => {
@@ -134,6 +148,11 @@ describe("canRotateLocalLiveKitKeys", () => {
 
   it("does not write new keys from the LumiVoice container", async () => {
     process.env.DECK_IN_COMPOSE = "1";
-    await expect(applyLocalLiveKitKeys("generate")).rejects.toThrow(/LumiVoice container/);
+    await expect(applyLocalLiveKitKeys()).rejects.toThrow(/LumiVoice container/);
+  });
+
+  it("does not revoke from the LumiVoice container", async () => {
+    process.env.DECK_IN_COMPOSE = "1";
+    await expect(revokeLocalLiveKitKey("deck_extra")).rejects.toThrow(/Revoking a key/);
   });
 });

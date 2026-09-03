@@ -1,8 +1,9 @@
 import {
   findProjectIdsByApiKey,
   getProjectLiveKitForWebhook,
+  infraWebhookReceiver,
 } from "@/lib/livekit";
-import { startRoomRecordingInBackground } from "@/lib/egress/recording";
+import { resolveProjectIdForRoom } from "@/lib/events/attribution";
 import { storeWebhookEvent } from "@/lib/events/store";
 
 export function stripBearer(header: string | null) {
@@ -29,6 +30,31 @@ export function isBrowserForgedWebhook(request: Request) {
   return Boolean(site && site !== "none");
 }
 
+/**
+ * The self-hosted server signs every webhook with the infra pair, so the issuer no
+ * longer names a project. Verify once, then attribute the event by its room.
+ */
+async function ingestViaInfraKey(body: string, token: string) {
+  const receiver = infraWebhookReceiver();
+  if (!receiver) return null;
+
+  let event;
+  try {
+    event = await receiver.receive(body, token);
+  } catch {
+    // Signed by a project key instead (a remote or Cloud LiveKit).
+    return null;
+  }
+
+  const projectId = await resolveProjectIdForRoom(event.room?.name ?? event.egressInfo?.roomName);
+  if (!projectId) {
+    throw new Error(`no project owns room ${event.room?.name ?? "(unknown)"}`);
+  }
+
+  await storeWebhookEvent(projectId, event, body);
+  return { stored: 1 };
+}
+
 export async function ingestLiveKitWebhook(options: {
   body: string;
   authHeader: string | null;
@@ -39,6 +65,12 @@ export async function ingestLiveKitWebhook(options: {
     throw new Error("authorization header is empty");
   }
 
+  if (!options.projectId) {
+    const viaInfra = await ingestViaInfraKey(options.body, token);
+    if (viaInfra) return viaInfra;
+  }
+
+  // Per-project webhook URL, or a remote LiveKit signing with the project's own key.
   const projectIds = options.projectId
     ? [options.projectId]
     : await findProjectIdsByApiKey(readJwtIssuer(token) ?? "");
@@ -61,10 +93,9 @@ export async function ingestLiveKitWebhook(options: {
       const event = await livekit.webhook.receive(options.body, token);
       await storeWebhookEvent(projectId, event, options.body);
       stored += 1;
-      const roomName = event.room?.name?.trim();
-      if (roomName && (event.event === "room_started" || event.event === "participant_joined")) {
-        startRoomRecordingInBackground(livekit, roomName);
-      }
+      // Recording is declared at room creation and backstopped by the agent. Starting it
+      // from webhooks recursed: each room-composite egress joins as a participant, which
+      // fired participant_joined and started yet another composite.
     } catch (error) {
       lastError = error;
     }

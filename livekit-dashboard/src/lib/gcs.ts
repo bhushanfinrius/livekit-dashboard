@@ -148,6 +148,72 @@ export function signedGcsGetUrl(
   return `https://${host}${canonicalUri}?${canonicalQuery}&X-Goog-Signature=${signature}`;
 }
 
+export type GcsCorsRule = {
+  origin?: string[];
+  method?: string[];
+  responseHeader?: string[];
+  maxAgeSeconds?: number;
+};
+
+/** The JSON API needs a real OAuth2 token, so exchange a signed JWT assertion for one. */
+async function gcsAccessToken(credentials: GcsCredentials, scope: string) {
+  const tokenUrl = "https://oauth2.googleapis.com/token";
+  const now = Math.floor(Date.now() / 1000);
+  const b64 = (value: string) => Buffer.from(value).toString("base64url");
+  const unsigned = `${b64(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${b64(
+    JSON.stringify({
+      iss: credentials.client_email,
+      scope,
+      aud: tokenUrl,
+      iat: now,
+      exp: now + 3600,
+    }),
+  )}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(unsigned);
+  const assertion = `${unsigned}.${signer.sign(credentials.private_key, "base64url")}`;
+
+  const response = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }),
+  });
+  if (!response.ok) throw new Error(`Google token exchange failed (${response.status})`);
+  const body = (await response.json()) as { access_token?: string };
+  if (!body.access_token) throw new Error("Google token exchange returned no access token");
+  return body.access_token;
+}
+
+export async function fetchBucketCors(bucket: string, credentials: GcsCredentials) {
+  const token = await gcsAccessToken(
+    credentials,
+    "https://www.googleapis.com/auth/devstorage.read_only",
+  );
+  const response = await fetch(
+    `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}?fields=cors`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  const body = (await response.json().catch(() => ({}))) as {
+    cors?: GcsCorsRule[];
+    error?: { message?: string };
+  };
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? `${response.status} ${response.statusText}`);
+  }
+  return body.cors ?? [];
+}
+
+export function corsAllowsOrigin(rules: GcsCorsRule[], origin: string) {
+  return rules.some(
+    (rule) =>
+      (rule.origin ?? []).some((allowed) => allowed === origin || allowed === "*") &&
+      (rule.method ?? []).some((method) => method.toUpperCase() === "GET"),
+  );
+}
+
 export async function resolvePlayableUrl(location: string | null) {
   if (!location) return null;
   const trimmed = location.trim();

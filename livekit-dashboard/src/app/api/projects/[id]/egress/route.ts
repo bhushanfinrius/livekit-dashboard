@@ -1,6 +1,6 @@
 import { jsonError, jsonOk } from "@/lib/http";
 import { liveKitActionError, readJsonBody, requireProjectLiveKit } from "@/lib/api/project";
-import { recordingOutputError, roomCompositeFileOutput } from "@/lib/egress/recording";
+import { mixedFileOutput, recordingOutputError } from "@/lib/egress/recording";
 import { splitEgressJobs, toEgressSnapshot } from "@/lib/livekit";
 import { startRecordingSchema } from "@/lib/validators/egress";
 
@@ -41,7 +41,7 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const job = await access.livekit.egress.startRoomComposite(
       parsed.data.roomName,
-      roomCompositeFileOutput(),
+      mixedFileOutput(),
       { audioOnly: parsed.data.audioOnly },
     );
     return jsonOk({ egress: toEgressSnapshot(job) }, 201);

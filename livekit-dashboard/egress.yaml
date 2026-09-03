@@ -1,8 +1,0 @@
-log_level: info
-api_key: deck_bcce7fdea121fc22
-api_secret: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
-ws_url: ws://livekit:7880
-insecure: true
-redis:
-  address: redis:6379
-health_port: 8080

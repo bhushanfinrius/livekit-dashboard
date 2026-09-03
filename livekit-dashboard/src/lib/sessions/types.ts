@@ -45,6 +45,9 @@ export type SessionTranscriptLine = {
   at: string | null;
 };
 
+/** mixed = both voices in one file, prospect/agent = single-side track. */
+export type RecordingRole = "mixed" | "prospect" | "agent";
+
 export type SessionRecording = {
   id: string;
   type: string;
@@ -55,6 +58,8 @@ export type SessionRecording = {
   playableUrl: string | null;
   error: string | null;
   durationSeconds: number | null;
+  role: RecordingRole;
+  label: string;
 };
 
 export type SessionDetailPayload = {

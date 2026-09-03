@@ -2,7 +2,9 @@ import { Prisma } from "@/generated/prisma";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonOk } from "@/lib/http";
-import { coerceLocalLiveKitCredentials } from "@/lib/livekit/local-defaults";
+import type { LiveKitKeyPair } from "@/lib/livekit/apply-local-keys";
+import { isLocalLiveKitUrl } from "@/lib/livekit/local-defaults";
+import { assignProjectKeyPair } from "@/lib/livekit/service";
 import {
   encryptLiveKitSecret,
   liveKitErrorMessage,
@@ -49,12 +51,31 @@ export async function POST(request: Request) {
     return jsonError(first, 400, "VALIDATION");
   }
 
-  const coerced = coerceLocalLiveKitCredentials(parsed.data);
-  const livekitUrl = toHttpLivekitUrl(coerced.livekitUrl);
+  const livekitUrl = toHttpLivekitUrl(parsed.data.livekitUrl);
+  const pasted =
+    parsed.data.livekitApiKey && parsed.data.livekitApiSecret
+      ? { apiKey: parsed.data.livekitApiKey, apiSecret: parsed.data.livekitApiSecret }
+      : null;
+
+  // The self-hosted server hands out its own keys, LiveKit Cloud style. Only a remote
+  // server still needs credentials pasted in.
+  let pair: LiveKitKeyPair;
+  if (pasted) {
+    pair = pasted;
+  } else if (isLocalLiveKitUrl(livekitUrl)) {
+    try {
+      pair = await assignProjectKeyPair();
+    } catch (error) {
+      return jsonError(liveKitErrorMessage(error), 409, "LIVEKIT");
+    }
+  } else {
+    return jsonError("API key and secret are required for a remote LiveKit server", 400, "VALIDATION");
+  }
+
   const credentials = {
     livekitUrl,
-    livekitApiKey: coerced.livekitApiKey,
-    livekitApiSecret: coerced.livekitApiSecret,
+    livekitApiKey: pair.apiKey,
+    livekitApiSecret: pair.apiSecret,
   };
 
   try {
@@ -85,6 +106,7 @@ export async function POST(request: Request) {
           name: true,
           joinCode: true,
           livekitUrl: true,
+          livekitApiKey: true,
         },
       });
       break;
@@ -104,5 +126,6 @@ export async function POST(request: Request) {
     return jsonError("Could not create project", 500, "CREATE_FAILED");
   }
 
-  return jsonOk(project, 201);
+  // The only time the secret is returned in plaintext; owners can re-read it from API keys.
+  return jsonOk({ ...project, livekitApiSecret: pair.apiSecret }, 201);
 }

@@ -21,10 +21,13 @@ export const createProjectSchema = z.object({
       (value) => /^(https?|wss?):\/\//i.test(value),
       "URL must start with http(s):// or ws(s)://",
     ),
-  livekitApiKey: z.string().trim().min(1, "API key is required"),
+  // Omitted for the self-hosted LiveKit: the server assigns a pair from its key pool.
+  // Still accepted so a remote or LiveKit Cloud server can be added by hand.
+  livekitApiKey: z.string().trim().min(1, "API key is required").optional(),
   livekitApiSecret: z
     .string()
-    .min(32, "API secret must be at least 32 characters (LiveKit 1.13+)"),
+    .min(32, "API secret must be at least 32 characters (LiveKit 1.13+)")
+    .optional(),
 });
 
 export const joinProjectSchema = z.object({

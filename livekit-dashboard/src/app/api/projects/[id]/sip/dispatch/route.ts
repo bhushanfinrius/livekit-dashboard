@@ -4,8 +4,11 @@ import {
   readJsonBody,
   requireProjectLiveKit,
 } from "@/lib/api/project";
+import { registerProjectRoom, registerProjectRoomPrefix } from "@/lib/events/attribution";
 import { toDispatchRuleSnapshot } from "@/lib/livekit";
+import { recordingOutputError, roomEgressConfig } from "@/lib/egress/recording";
 import { dispatchRuleSchema } from "@/lib/validators/sip";
+import { RoomConfiguration } from "livekit-server-sdk";
 
 export const dynamic = "force-dynamic";
 
@@ -39,13 +42,27 @@ export async function POST(request: Request, context: RouteContext) {
         ? { type: "individual" as const, roomPrefix: parsed.data.roomPrefix ?? "", pin: parsed.data.pin }
         : { type: "callee" as const, roomPrefix: parsed.data.roomPrefix ?? "", pin: parsed.data.pin };
 
+  // Inbound calls create their own room, so recording has to be declared on the rule.
+  const recordingError = recordingOutputError();
+
   try {
     const created = await access.livekit.sip.createDispatch(rule, {
       name: parsed.data.name,
       trunkIds: parsed.data.trunkIds,
       metadata: parsed.data.metadata,
+      roomConfig: recordingError
+        ? undefined
+        : new RoomConfiguration({ egress: roomEgressConfig(parsed.data.agentName) }),
     });
-    return jsonOk({ rule: toDispatchRuleSnapshot(created) }, 201);
+
+    // Inbound rooms are named by LiveKit, so claim the namespace to attribute webhooks.
+    if (rule.type === "direct") {
+      await registerProjectRoom(id, rule.roomName);
+    } else {
+      await registerProjectRoomPrefix(id, rule.roomPrefix);
+    }
+
+    return jsonOk({ rule: toDispatchRuleSnapshot(created), recordingError }, 201);
   } catch (error) {
     return liveKitActionError(error);
   }

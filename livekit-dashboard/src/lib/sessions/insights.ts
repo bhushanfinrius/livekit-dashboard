@@ -1,6 +1,11 @@
 import type { EgressInfo } from "livekit-server-sdk";
 import { toEgressSnapshot } from "@/lib/livekit/egress-dto";
 import { asRecord } from "@/lib/overview/payload";
+import {
+  RECORDING_ROLE_ORDER,
+  recordingRoleFromOutput,
+  recordingRoleLabel,
+} from "@/lib/sessions/recording-role";
 import type {
   SessionRecording,
   SessionTranscriptLine,
@@ -197,9 +202,11 @@ function recordingFromJson(raw: unknown): SessionRecording | null {
         ? EGRESS_STATUS[statusRaw] ?? String(statusRaw)
         : "unknown";
 
+  const type = str(info, "type") ?? "egress";
+  const role = recordingRoleFromOutput(output, type);
   return {
     id,
-    type: str(info, "type") ?? "egress",
+    type,
     status,
     startedAt: protoIso(started),
     endedAt: protoIso(ended),
@@ -207,6 +214,8 @@ function recordingFromJson(raw: unknown): SessionRecording | null {
     playableUrl: playableMediaUrl(output),
     error: str(info, "error"),
     durationSeconds: duration,
+    role,
+    label: recordingRoleLabel(role),
   };
 }
 
@@ -228,6 +237,7 @@ export function recordingsFromEgressInfo(jobs: EgressInfo[]): SessionRecording[]
     const snapshot = toEgressSnapshot(job);
     const file = job.fileResults?.[0];
     const duration = protoSeconds(file?.duration != null ? Number(file.duration) : null);
+    const role = recordingRoleFromOutput(snapshot.output, snapshot.type);
     return {
       id: snapshot.id,
       type: snapshot.type,
@@ -238,6 +248,8 @@ export function recordingsFromEgressInfo(jobs: EgressInfo[]): SessionRecording[]
       playableUrl: playableMediaUrl(snapshot.output),
       error: snapshot.error,
       durationSeconds: duration,
+      role,
+      label: recordingRoleLabel(role),
     };
   });
 }
@@ -250,7 +262,10 @@ export function mergeRecordings(...groups: SessionRecording[][]) {
       byId.set(recording.id, existing ? { ...existing, ...recording } : recording);
     }
   }
+  // Mixed first so the player opens on the file that has both voices.
   return [...byId.values()].sort((a, b) => {
+    const byRole = RECORDING_ROLE_ORDER[a.role] - RECORDING_ROLE_ORDER[b.role];
+    if (byRole !== 0) return byRole;
     const aStart = a.startedAt ? Date.parse(a.startedAt) : 0;
     const bStart = b.startedAt ? Date.parse(b.startedAt) : 0;
     return bStart - aStart || a.id.localeCompare(b.id);

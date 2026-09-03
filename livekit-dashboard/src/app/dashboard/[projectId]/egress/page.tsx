@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { auth } from "@/auth";
 import { EgressIngressView } from "@/components/egress/egress-ingress-view";
 import { EmptyState } from "@/components/empty-state";
+import { RecordingReadinessBanner } from "@/components/egress/recording-readiness-banner";
 import { recordingOutputError } from "@/lib/egress/recording";
+import { recordingReadiness } from "@/lib/egress/readiness";
 import {
   getProjectLiveKit,
   liveKitErrorMessage,
@@ -36,18 +38,22 @@ export default async function EgressPage({
 
   try {
     const livekit = await getProjectLiveKit(session.user.id, projectId);
-    const [egress, ingress] = await Promise.all([
+    const [egress, ingress, readiness] = await Promise.all([
       livekit.egress.list().then((jobs) => splitEgressJobs(jobs.map(toEgressSnapshot))),
       livekit.ingress.list().then((items) => items.map(toIngressSnapshot)),
+      recordingReadiness(livekit),
     ]);
     return (
-      <EgressIngressView
-        projectId={projectId}
-        initialEgress={egress}
-        initialIngress={ingress}
-        recordingError={recordingOutputError()}
-        mode="egress"
-      />
+      <div className="space-y-4">
+        <RecordingReadinessBanner readiness={readiness} />
+        <EgressIngressView
+          projectId={projectId}
+          initialEgress={egress}
+          initialIngress={ingress}
+          recordingError={recordingOutputError()}
+          mode="egress"
+        />
+      </div>
     );
   } catch (error) {
     if (error instanceof ProjectAccessError) {

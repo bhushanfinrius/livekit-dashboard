@@ -95,3 +95,26 @@ export function sessionDisplayId(session: SessionSnapshot) {
   if (session.id.startsWith("implicit:") || session.id.startsWith("egress:")) return session.roomName;
   return session.id;
 }
+
+export function findSessionSnapshot(
+  sessions: SessionSnapshot[],
+  sessionId: string,
+): SessionSnapshot | undefined {
+  return sessions.find(
+    (item) =>
+      item.id === sessionId ||
+      item.roomSid === sessionId ||
+      item.roomName === sessionId ||
+      sessionDisplayId(item) === sessionId,
+  );
+}
+
+export function sessionLookupKeys(session: SessionSnapshot, sessionId?: string): string[] {
+  return Array.from(
+    new Set(
+      [session.roomName, session.roomSid, session.id, sessionId]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}

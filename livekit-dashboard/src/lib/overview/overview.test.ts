@@ -2,7 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { parseGcsLocation, signedGcsGetUrl } from "@/lib/gcs";
 import { kindLabel } from "@/lib/overview/payload";
-import { buildOverviewSeries, minutesForKind } from "@/lib/overview/series";
+import { buildOverviewSeries, minutesForKind, minutesFromSessions } from "@/lib/overview/series";
 import { parseSessionTranscripts, playableMediaUrl, recordingsFromWebhooks } from "@/lib/sessions/insights";
 
 describe("playableMediaUrl", () => {
@@ -94,6 +94,37 @@ describe("buildOverviewSeries", () => {
   });
 });
 
+describe("minutesFromSessions", () => {
+  it("counts unique identities and SIP/agent minutes from reconstructed sessions", () => {
+    const start = Date.parse("2026-09-03T06:00:00.000Z");
+    const sessions = [
+      {
+        endedAt: "2026-09-03T06:02:00.000Z",
+        participants: [
+          {
+            kind: "agent" as const,
+            joinedAt: "2026-09-03T06:00:00.000Z",
+            leftAt: "2026-09-03T06:02:00.000Z",
+            identity: "agent-AJ_abc",
+          },
+          {
+            kind: "sip" as const,
+            joinedAt: "2026-09-03T06:00:05.000Z",
+            leftAt: "2026-09-03T06:02:00.000Z",
+            identity: "sip_918177938974",
+          },
+        ],
+      },
+    ];
+    const unique = new Set(sessions.flatMap((session) => session.participants.map((p) => p.identity)));
+    expect(unique.size).toBeGreaterThan(0);
+    const minutes = minutesFromSessions(sessions, start, start + 10 * 60_000);
+    expect(minutes.byKind.agent).toBe(2);
+    expect(minutes.byKind.sip).toBeGreaterThan(0);
+    expect(minutes.total).toBeGreaterThan(0);
+  });
+});
+
 describe("parseSessionTranscripts", () => {
   it("reads Deck ingest payloads", () => {
     const lines = parseSessionTranscripts(
@@ -117,6 +148,23 @@ describe("parseSessionTranscripts", () => {
     expect(lines[0]?.speaker).toBe("agent");
     expect(lines[0]?.text).toContain("Riya");
     expect(lines[0]?.at).toBe("2026-08-21T10:00:01.000Z");
+  });
+
+  it("collapses duplicate live + session-report lines", () => {
+    const payload = {
+      event: "transcription",
+      room: { name: "CAMP_1" },
+      participant: { identity: "riya-smart-sales-v43" },
+      transcription: {
+        text: "Namaste, main Riya bol rahi hoon.",
+        role: "agent",
+        startTime: 0,
+        final: true,
+        startedAt: "2026-08-21T10:00:01.000Z",
+      },
+    };
+    const lines = parseSessionTranscripts([payload, { ...payload }], new Set(["riya-smart-sales-v43"]));
+    expect(lines).toHaveLength(1);
   });
 });
 

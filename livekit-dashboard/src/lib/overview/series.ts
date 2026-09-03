@@ -236,3 +236,31 @@ export function buildOverviewSeries(events: SeriesEvent[], range: OverviewRange,
     hasSipDirection: hasDirection,
   };
 }
+
+export function minutesFromSessions(
+  sessions: { endedAt: string | null; participants: { kind: KindBucket; joinedAt: string; leftAt: string | null }[] }[],
+  rangeStart: number,
+  rangeEnd: number,
+) {
+  const byKind: Record<KindBucket, number> = { webrtc: 0, sip: 0, agent: 0 };
+  let total = 0;
+  for (const session of sessions) {
+    const sessionEnd = session.endedAt ? Date.parse(session.endedAt) : rangeEnd;
+    for (const participant of session.participants) {
+      const start = Math.max(Date.parse(participant.joinedAt), rangeStart);
+      const end = Math.min(participant.leftAt ? Date.parse(participant.leftAt) : sessionEnd, rangeEnd);
+      if (end <= start) continue;
+      const minutes = (end - start) / 60_000;
+      total += minutes;
+      byKind[participant.kind] += minutes;
+    }
+  }
+  return {
+    total: Math.round(total * 10) / 10,
+    byKind: {
+      webrtc: Math.round(byKind.webrtc * 10) / 10,
+      sip: Math.round(byKind.sip * 10) / 10,
+      agent: Math.round(byKind.agent * 10) / 10,
+    },
+  };
+}

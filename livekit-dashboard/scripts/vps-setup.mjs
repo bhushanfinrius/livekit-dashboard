@@ -141,7 +141,7 @@ async function main() {
     await rewriteAgentTranscriptEnv(ROOT);
   }
 
-  console.log("\n→ 3/6  Rebuild stack");
+  console.log("\n→ 3/6  Rebuild stack (deck dashboard + LiveKit + agent)");
   const services = withAgent
     ? "postgres redis livekit sip egress deck agent"
     : "postgres redis livekit sip egress deck";

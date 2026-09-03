@@ -62,7 +62,7 @@ export function RecordingPlayer({
     void decodePeaks(url)
       .then(setPeaks)
       .catch(() => {
-        setWaveformError("Waveform needs a CORS-enabled HTTP(S) recording URL.");
+        setWaveformError("Waveform needs CORS. Run npm run recording:cors on the GCS bucket.");
       });
   }, [url]);
 

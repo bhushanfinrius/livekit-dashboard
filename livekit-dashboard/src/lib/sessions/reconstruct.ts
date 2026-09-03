@@ -190,6 +190,7 @@ export function reconstructSessions(
       if (!roomName && !event.roomSid) continue;
       const open = findOpen(bySid, byName, event.roomSid, roomName);
       if (!open) continue;
+      open.implicit = false;
       closeDraft(open, event.at);
       detach(bySid, byName, open);
       closed.push(open);

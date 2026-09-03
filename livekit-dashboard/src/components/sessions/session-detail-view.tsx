@@ -40,7 +40,9 @@ export function SessionDetailView({
           <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight">
             {session.roomName}
           </h2>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">{session.id}</p>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            {session.roomSid ?? session.id}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <FeaturePills features={session.features} />

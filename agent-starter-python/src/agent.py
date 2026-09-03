@@ -133,11 +133,16 @@ _NOT_INTERESTED_RE = re.compile(
     r"don't\s+want|not\s+now)"
 )
 _BUSY_CALLBACK_RE = re.compile(
-    r"(?i)(busy|call\s*back|callback|call\s+me\s+later|later|"
-    r"बाद\s*में|"
-    r"abhi\s*(busy|nahi|time\s+nahi)|not\s+a\s+good\s+time|"
-    r"phir\s+(se\s+)?call|phone\s+karo|"
-    r"\d{1,2}\s*[:.]\s*\d{2}\s*(am|pm)?)"
+    r"(?i)("
+    r"\bi['’]?m\s+busy\b|"
+    r"call\s*(me\s+)?back|"
+    r"callback|"
+    r"call\s+me\s+later|"
+    r"not\s+a\s+good\s+time|"
+    r"abhi\s*(busy|time\s+nahi)|"
+    r"phir\s+(se\s+)?call|"
+    r"बाद\s*में\s*(call|फोन|phone)"
+    r")"
 )
 
 # [C1] Single env var for GCS credentials used everywhere
@@ -185,6 +190,28 @@ async def send_webhook(payload: dict):
         logger.info("Skipping backend webhook %s", payload.get("event"))
         return
     await asyncio.gather(*[_send_to_one(url, payload) for url in BACKEND_WEBHOOK_URLS])
+
+
+def _deck_transcript_url_ok() -> bool:
+    url = DECK_TRANSCRIPT_URL.lower()
+    if not url:
+        logger.error(
+            "[deck-transcript] DECK_TRANSCRIPT_URL is empty — LumiVoice will not store transcripts"
+        )
+        return False
+    if "localhost" in url or "127.0.0.1" in url:
+        logger.error(
+            "[deck-transcript] DECK_TRANSCRIPT_URL=%s cannot work from Docker. "
+            "Use http://deck:3000/api/projects/<id>/sessions/transcripts",
+            DECK_TRANSCRIPT_URL,
+        )
+        return False
+    if "://deck:" not in url and "://deck/" not in url:
+        logger.warning(
+            "[deck-transcript] DECK_TRANSCRIPT_URL=%s is not the Compose deck host",
+            DECK_TRANSCRIPT_URL,
+        )
+    return True
 
 
 async def post_deck_transcript(room_name: str, speaker: str, identity: str, text: str) -> None:
@@ -253,6 +280,118 @@ async def register_deck_room(room_name: str) -> None:
                 logger.info("[deck-room] registered %s", room_name)
     except Exception as exc:
         logger.warning("[deck-room] failed: %s", exc)
+
+
+def _item_text(item) -> str:
+    content = getattr(item, "content", None) or getattr(item, "text_content", None) or getattr(item, "text", None)
+    if content is None and isinstance(item, dict):
+        content = item.get("content") or item.get("text") or item.get("transcript")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("transcript") or ""))
+            else:
+                parts.append(str(getattr(block, "text", "") or ""))
+        return " ".join(p for p in parts if p).strip()
+    return str(content or "").strip()
+
+
+def _history_items(report) -> list:
+    data = report
+    if hasattr(report, "to_dict"):
+        try:
+            data = report.to_dict()
+        except Exception:
+            data = report
+    raw = None
+    if isinstance(data, dict):
+        raw = (
+            data.get("chat_history")
+            or data.get("history")
+            or data.get("items")
+            or data.get("events")
+            or []
+        )
+    else:
+        raw = (
+            getattr(report, "chat_history", None)
+            or getattr(report, "history", None)
+            or getattr(report, "items", None)
+            or []
+        )
+    if raw is not None and hasattr(raw, "to_dict") and not isinstance(raw, dict):
+        try:
+            raw = raw.to_dict()
+        except Exception:
+            pass
+    if isinstance(raw, dict):
+        raw = raw.get("items") or raw.get("messages") or raw.get("history") or []
+    elif raw is not None and hasattr(raw, "items") and not isinstance(raw, list):
+        raw = raw.items
+    return list(raw or [])
+
+
+def history_lines_from_report(report) -> list[tuple[str, str, str]]:
+    """Map a SessionReport / history object to (speaker, identity, text) for LumiVoice."""
+    if report is None:
+        return []
+    lines: list[tuple[str, str, str]] = []
+    for item in _history_items(report):
+        role = (getattr(item, "role", None) or (item.get("role") if isinstance(item, dict) else "") or "").lower()
+        text = _item_text(item)
+        if not text:
+            continue
+        if role in ("user", "prospect"):
+            lines.append(("user", "Prospect", text))
+        elif role in ("assistant", "agent"):
+            lines.append(("agent", "Kinjal (Lumiverse)", text))
+    return lines
+
+
+def should_end_as_no_answer(remote_identities: list[str]) -> bool:
+    """No-answer only when nobody else is in the room — not when SIP identity lookup missed."""
+    return len([identity for identity in remote_identities if identity]) == 0
+
+
+async def dump_session_report_to_deck(
+    state: "CallState",
+    session: Optional[AgentSession],
+    ctx: Optional[JobContext],
+) -> None:
+    """Official Agents data-hook dump so LumiVoice still gets a transcript if live POSTs failed."""
+    if getattr(state, "_transcript_dumped", False):
+        return
+    if not _deck_transcript_url_ok():
+        return
+    lines: list[tuple[str, str, str]] = []
+    if ctx is not None and hasattr(ctx, "make_session_report"):
+        try:
+            report = ctx.make_session_report()
+            lines = history_lines_from_report(report)
+        except Exception as exc:
+            logger.warning("[deck-transcript] make_session_report failed: %s", exc)
+    if not lines and session is not None:
+        history = getattr(session, "history", None)
+        lines = history_lines_from_report(history)
+    if not lines and state.transcript_parts:
+        for part in state.transcript_parts:
+            if ":" not in part:
+                continue
+            role, text = part.split(":", 1)
+            speaker = "user" if role.strip().lower().startswith("prospect") else "agent"
+            lines.append((speaker, role.strip(), text.strip()))
+    if not lines:
+        logger.warning("[deck-transcript] session report had no history lines")
+        return
+    state._transcript_dumped = True
+    logger.info("[deck-transcript] dumping %s history line(s) to LumiVoice", len(lines))
+    for speaker, identity, text in lines:
+        await post_deck_transcript(state.room_name, speaker, identity, text)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1276,6 +1415,8 @@ class CallState:
         self._background_audio:     Optional[BackgroundAudioPlayer] = None
         self._vm_text_buffer:       str                   = ""
         self._vm_hangup_scheduled:  bool                  = False
+        self.hangup_reason:         str                   = ""
+        self._transcript_dumped:    bool                  = False
 
     def add_turn(self, role: str, text: str):
         if text.strip():
@@ -1428,6 +1569,9 @@ async def _handle_call_end(state: CallState):
 
     logger.info(f"[{state.room_name}] Call ended — running analysis...")
 
+    ctx = get_job_context()
+    await dump_session_report_to_deck(state, state.session, ctx)
+
     transcript    = state.full_transcript()
     conv_duration = state.conversation_duration_seconds()
     wall_duration = state.duration_seconds()
@@ -1505,21 +1649,32 @@ async def _complete_call_shutdown(
     state: CallState,
     *,
     delay_seconds: float = 0,
+    hangup_now: bool = False,
+    reason: str = "",
 ) -> None:
-    """Recording/analysis/webhooks after the SIP room is already gone. Safe to call from multiple paths."""
+    """Finalize recording/analysis. Delete the SIP room first only on end_call / callee leave."""
+    if reason:
+        state.hangup_reason = reason
     if state._shutdown_task and not state._shutdown_task.done():
         await state._shutdown_task
         return
     if state._call_end_handled:
-        await hangup_call(delay_seconds=delay_seconds)
+        if hangup_now:
+            await hangup_call(delay_seconds=delay_seconds)
         return
 
     async def _run() -> None:
         try:
-            # Hang up the SIP leg first; recording/analysis/Solvox webhooks continue in-process.
-            await hangup_call(delay_seconds=delay_seconds)
+            logger.info(
+                f"[{state.room_name}] hangup reason={state.hangup_reason or reason or 'unknown'} "
+                f"hangup_now={hangup_now}"
+            )
+            if hangup_now:
+                await hangup_call(delay_seconds=delay_seconds)
             await _handle_call_end(state)
             await _close_agent_session(state)
+            if not hangup_now:
+                await hangup_call(delay_seconds=delay_seconds)
             logger.info(f"[{state.room_name}] ✅ Call shutdown complete")
         except Exception as e:
             logger.error(f"[{state.room_name}] Shutdown failed: {e}", exc_info=True)
@@ -1542,7 +1697,7 @@ async def _await_call_shutdown(state: CallState, session: Optional[AgentSession]
     if session and _had_conversation(state) and not state.callee_hung_up:
         await _graceful_call_shutdown(state, session, skip_farewell=False, reason="disconnect")
     else:
-        await _complete_call_shutdown(state)
+        await _complete_call_shutdown(state, hangup_now=True, reason="callee_left")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1680,7 +1835,7 @@ async def _enforce_max_call_duration(state: CallState, session: AgentSession) ->
     if _had_conversation(state):
         await _graceful_call_shutdown(state, session, skip_farewell=False, reason="max_duration")
     else:
-        await _complete_call_shutdown(state)
+        await _complete_call_shutdown(state, reason="max_duration")
 
 
 async def _graceful_call_shutdown(
@@ -1707,7 +1862,8 @@ async def _graceful_call_shutdown(
     if session and not skip_farewell and _had_conversation(state):
         await _deliver_closing_greeting(session, state.room_name)
 
-    await _complete_call_shutdown(state, delay_seconds=0)
+    hangup_now = reason in ("end_call", "end_call_tool", "callee_left", "disconnect")
+    await _complete_call_shutdown(state, delay_seconds=0, hangup_now=hangup_now, reason=reason)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2126,7 +2282,7 @@ class LumiverseSalesAgent(Agent):
             self._state,
             self.session,
             skip_farewell=True,
-            reason="end_call_tool",
+            reason="end_call",
         )
         return "Call ending."
 
@@ -2271,7 +2427,7 @@ async def _end_call_as_voicemail_detected(state: CallState) -> None:
     state.forced_agent_notes   = _VOICEMAIL_AGENT_NOTES
     _cancel_max_duration_timer(state)
     logger.info(f"[{state.room_name}] 📞 Voicemail detected — finalizing call")
-    await _complete_call_shutdown(state)
+    await _complete_call_shutdown(state, reason="voicemail")
 
 
 async def _check_and_hangup_voicemail(state: CallState, text: str) -> None:
@@ -2331,9 +2487,15 @@ async def _run_outbound_call_setup(ctx: JobContext, session: AgentSession, state
         await asyncio.sleep(0.2)
 
         sip_identity = await _wait_for_sip_participant(ctx, SIP_JOIN_TIMEOUT)
+        remotes = [p.identity for p in ctx.room.remote_participants.values() if p.identity]
+        if not sip_identity and not should_end_as_no_answer(remotes):
+            logger.info(
+                f"[{state.room_name}] SIP identity not matched but remotes present {remotes} — not no-answer"
+            )
+            sip_identity = remotes[0]
         if not sip_identity:
-            logger.info(f"[{state.room_name}] No SIP participant within {SIP_JOIN_TIMEOUT:.0f}s")
-            await _end_call_as_no_answer(state, "Callee did not pick up — no SIP participant joined.")
+            logger.info(f"[{state.room_name}] No remote participant within {SIP_JOIN_TIMEOUT:.0f}s")
+            await _end_call_as_no_answer(state, "Callee did not pick up — no remote participant joined.")
             return
 
         logger.info(f"[{state.room_name}] SIP participant joined: {sip_identity}")
@@ -2352,7 +2514,7 @@ async def _end_call_as_no_answer(state: CallState, reason: str) -> None:
     state._amd_closing = True
     logger.info(f"[{state.room_name}] 📵 No answer — {reason}")
     _cancel_max_duration_timer(state)
-    await _complete_call_shutdown(state)
+    await _complete_call_shutdown(state, reason="no_answer")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2371,7 +2533,27 @@ server = AgentServer(
     job_memory_warn_mb=AGENT_JOB_MEMORY_WARN_MB,
 )
 
-@server.rtc_session(agent_name=AGENT_NAME)
+_ACTIVE_CALLS: dict[str, CallState] = {}
+
+async def on_session_end(ctx: JobContext) -> None:
+    """LiveKit data hook: dump session.history even if live transcript POSTs failed."""
+    room = getattr(getattr(ctx, "room", None), "name", "") or ""
+    state = _ACTIVE_CALLS.pop(room, None)
+    if state is None:
+        class _Stub:
+            room_name = room
+            transcript_parts: list[str] = []
+            session = None
+            _transcript_dumped = False
+
+        state = _Stub()
+    try:
+        await dump_session_report_to_deck(state, getattr(state, "session", None), ctx)
+    except Exception as exc:
+        logger.warning("[deck-transcript] on_session_end dump failed: %s", exc)
+
+
+@server.rtc_session(agent_name=AGENT_NAME, on_session_end=on_session_end)
 async def entrypoint(ctx: JobContext):
     logger.info(
         "🚀 Starting Lumiverse vCISO Sales Agent v8.0 (vertex=%s/%s max_jobs=%s)",
@@ -2381,7 +2563,9 @@ async def entrypoint(ctx: JobContext):
     )
 
     state = CallState(ctx)
-    asyncio.create_task(register_deck_room(state.room_name))
+    _ACTIVE_CALLS[state.room_name] = state
+    _deck_transcript_url_ok()
+    await register_deck_room(state.room_name)
     state.recording_active, state.recording_needs_fallback = await ensure_room_recording(
         state.room_name
     )

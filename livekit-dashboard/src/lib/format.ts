@@ -23,6 +23,22 @@ export function formatWhen(iso: string) {
   });
 }
 
+/** Cloud Sessions column: "2 hours ago". */
+export function formatRelativeTime(iso: string, now = Date.now()) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return formatWhen(iso);
+  const seconds = Math.round((now - at) / 1000);
+  const abs = Math.abs(seconds);
+  const suffix = seconds >= 0 ? "ago" : "from now";
+  if (abs < 60) return `${abs} sec ${suffix}`;
+  const minutes = Math.round(abs / 60);
+  if (minutes < 60) return `${minutes} min ${suffix}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return hours === 1 ? `an hour ${suffix}` : `${hours} hours ${suffix}`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? `a day ${suffix}` : `${days} days ${suffix}`;
+}
+
 export function formatParticipantMinutes(minutes: number) {
   if (minutes <= 0) return "0 min";
   if (minutes < 1) return `${Math.max(1, Math.round(minutes * 60))} sec`;

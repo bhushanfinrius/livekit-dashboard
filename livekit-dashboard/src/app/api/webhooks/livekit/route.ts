@@ -22,7 +22,14 @@ export async function POST(request: Request) {
     return jsonOk({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "invalid webhook";
-    console.error("[webhook]", message);
+    let room = "";
+    try {
+      const parsed = JSON.parse(body) as { room?: { name?: string }; egressInfo?: { roomName?: string } };
+      room = parsed.room?.name || parsed.egressInfo?.roomName || "";
+    } catch {
+      room = "";
+    }
+    console.error("[webhook]", message, room ? `room=${room}` : "");
     return jsonError("invalid webhook", 400, "INVALID_WEBHOOK");
   }
 }

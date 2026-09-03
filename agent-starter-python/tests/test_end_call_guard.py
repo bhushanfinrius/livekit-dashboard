@@ -1,4 +1,5 @@
 import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,6 @@ from agent import (  # noqa: E402
     looks_like_continue_invite,
     looks_like_not_interested,
     should_end_as_no_answer,
-    uses_gemini_developer_api,
 )
 
 
@@ -157,10 +157,26 @@ def test_history_lines_from_session_report() -> None:
     ]
 
 
-def test_gemini_developer_api_detects_aiza_keys() -> None:
-    assert uses_gemini_developer_api("AIzaSyDummyKeyForTest") is True
-    assert uses_gemini_developer_api("") is False
-    assert uses_gemini_developer_api("vertex-sa-not-aiza") is False
+def test_vertex_live_strips_gemini_api_keys(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSyShouldBeIgnored")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyAlsoIgnored")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "solvoxai.json")
+    from agent import (
+        _prepare_vertex_env,
+        GOOGLE_CLOUD_PROJECT,
+        GOOGLE_CLOUD_LOCATION,
+        GOOGLE_SERVICE_ACCOUNT_JSON,
+    )
+
+    _prepare_vertex_env()
+    assert os.getenv("GOOGLE_API_KEY") is None
+    assert os.getenv("GEMINI_API_KEY") is None
+    assert os.getenv("GOOGLE_GENAI_USE_VERTEXAI") == "true"
+    assert os.getenv("GOOGLE_CLOUD_PROJECT") == GOOGLE_CLOUD_PROJECT
+    assert os.getenv("GOOGLE_CLOUD_LOCATION") == GOOGLE_CLOUD_LOCATION
+    assert GOOGLE_SERVICE_ACCOUNT_JSON == "livekit-storage.json"
+    assert os.getenv("GOOGLE_APPLICATION_CREDENTIALS") == "livekit-storage.json"
+    assert os.getenv("GCS_SERVICE_ACCOUNT_JSON") == "livekit-storage.json"
 
 
 if __name__ == "__main__":

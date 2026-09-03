@@ -89,7 +89,7 @@ describe("mergeAgentRuntimeEnv", () => {
 describe("rewriteCredentialPaths", () => {
   it("rewrites relative credential files to container mounts", () => {
     const { env, mounts } = rewriteCredentialPaths(
-      { GOOGLE_APPLICATION_CREDENTIALS: "solvoxai.json", OPENAI_API_KEY: "sk" },
+      { GOOGLE_APPLICATION_CREDENTIALS: "livekit-storage.json", OPENAI_API_KEY: "sk" },
       "C:/agents/starter",
       () => true,
     );

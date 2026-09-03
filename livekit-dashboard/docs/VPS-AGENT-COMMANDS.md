@@ -27,11 +27,11 @@ cp ../agent-starter-python/.env.example ../agent-starter-python/.env.local
 nano ../agent-starter-python/.env.local
 # LIVEKIT_API_KEY + LIVEKIT_API_SECRET from config/livekit.vps.yaml.template
 # AGENT_NAME=mahindra_scraping, SKIP_CREDIT_CHECK=1
-# Vertex/Gemini keys, GOOGLE_CLOUD_LOCATION=asia-south1
-# GOOGLE_APPLICATION_CREDENTIALS=solvoxai.json
+# Vertex/Gemini keys, GOOGLE_CLOUD_LOCATION=us-central1
+# GOOGLE_APPLICATION_CREDENTIALS=livekit-storage.json
 # GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json
 
-# Upload solvoxai.json + livekit-storage.json to ../agent-starter-python/
+# Upload livekit-storage.json to ../agent-starter-python/
 
 # Start stack (generates config/livekit.runtime.yaml, mounts VPS LiveKit/SIP configs)
 npm run docker:vps:up

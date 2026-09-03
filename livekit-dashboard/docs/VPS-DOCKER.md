@@ -11,8 +11,7 @@ Turnkey Docker setup for running **LumiVoice + LiveKit + SIP + egress** on a pub
 │   └── config/                 ← VPS LiveKit/SIP configs (committed)
 └── agent-starter-python/
     ├── .env.local              ← secrets (never commit)
-    ├── solvoxai.json           ← Vertex/Gemini (never commit)
-    └── livekit-storage.json    ← GCS recordings (never commit)
+    └── livekit-storage.json    ← Vertex AI + GCS (never commit)
 ```
 
 ## Firewall (open on cloud + `ufw`)
@@ -45,11 +44,11 @@ nano ../agent-starter-python/.env.local
 # LIVEKIT_API_KEY + LIVEKIT_API_SECRET (from config/livekit.vps.yaml.template keys section)
 # AGENT_NAME=mahindra_scraping
 # SKIP_CREDIT_CHECK=1
-# GOOGLE_APPLICATION_CREDENTIALS=solvoxai.json
+# GOOGLE_APPLICATION_CREDENTIALS=livekit-storage.json
 # GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json
-# Vertex/Gemini keys, GOOGLE_CLOUD_LOCATION=asia-south1
+# Vertex location: GOOGLE_CLOUD_LOCATION=us-central1
 
-# Upload credential JSON files into agent-starter-python/
+# Upload livekit-storage.json into agent-starter-python/
 ```
 
 ## Start the stack
@@ -135,7 +134,7 @@ Never rotate `ENCRYPTION_KEY` on soft reset. Only set `AUTH_SECRET` / `ENCRYPTIO
 |---------|-----|
 | Duplicate demo projects / empty Sessions | `npm run vps:reset` |
 | Calls drop after ~10–20s | Confirm `LIVEKIT_PUBLIC_IP` matches VPS public IP; UDP 50000–50100 + 3478 open |
-| `solvoxai.json` not found | Place JSON in `agent-starter-python/`; redeploy agent |
+| `livekit-storage.json` not found | Place JSON in `agent-starter-python/`; redeploy agent |
 | Credit check rejection | `SKIP_CREDIT_CHECK=1` in `.env.local` (auto-set on deploy) |
 | Port 7880 conflict | Stop stray `lumivoice-sfu` or other LiveKit containers |
 | Wrong LiveKit URL in agent | Must be `ws://livekit:7880` inside Docker |

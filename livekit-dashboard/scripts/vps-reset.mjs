@@ -159,7 +159,7 @@ function patchAgentEnv(keepId, deckEnv, keys) {
   });
 
   console.log(`\n→ Patched ${envLocal}`);
-  for (const file of ["solvoxai.json", "livekit-storage.json"]) {
+  for (const file of ["livekit-storage.json"]) {
     const filePath = path.join(starter, file);
     console.log(existsSync(filePath) ? `  ✓ ${file}` : `  ✗ MISSING ${file} — upload before agent deploy`);
   }

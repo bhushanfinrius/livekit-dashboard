@@ -1,7 +1,7 @@
 """
 Mahindra car scraping agent — OPTIMIZED v8.0
 Fixes applied vs v7.2:
-  [C1]  GCS creds unified to single env var (GCS_SERVICE_ACCOUNT_JSON)
+  [C1]  Vertex + GCS share one SA file (livekit-storage.json)
   [C2]  Recording stopped + URL resolved before call_ended; room deleted last
   [C3]  Voicemail via parallel STT (non-blocking); greet first, hang up on VM confirm
   [C4]  rag_retrieve wrapped in asyncio.to_thread — no event-loop blocking
@@ -85,8 +85,12 @@ DECK_TRANSCRIPT_SECRET = os.getenv("DECK_TRANSCRIPT_SECRET", "").strip()
 GOOGLE_API_KEY        = os.getenv("GOOGLE_API_KEY",        "")
 GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007").strip() or "solvox-ai-007"
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1").strip() or "us-central1"
+# One SA JSON for Vertex Live and GCS recordings. Do not use solvoxai.json.
+GOOGLE_SERVICE_ACCOUNT_JSON = (
+    os.getenv("GCS_SERVICE_ACCOUNT_JSON") or "livekit-storage.json"
+).strip() or "livekit-storage.json"
+GCS_SERVICE_ACCOUNT_JSON = GOOGLE_SERVICE_ACCOUNT_JSON
 GEMINI_LIVE_VERTEX_MODEL = "gemini-live-2.5-flash-native-audio"
-GEMINI_LIVE_API_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 _REALTIME_VOICE_INSTRUCTIONS = """
 Speak only in natural Indian English accent.
 Never use an American accent.
@@ -96,56 +100,49 @@ Use Hinglish naturally when the user speaks Hindi.
 """
 
 
-def uses_gemini_developer_api(api_key: str | None = None) -> bool:
-    """AIza keys are Gemini Developer API keys. Vertex Live + those keys hit project-ed86b9c7 and 1008."""
-    if _env_flag("GOOGLE_GENAI_USE_VERTEXAI"):
-        return False
-    key = (api_key if api_key is not None else GOOGLE_API_KEY) or ""
-    key = key.strip() or (os.getenv("GEMINI_API_KEY") or "").strip()
-    return key.startswith("AIza")
+def _prepare_vertex_env() -> None:
+    """Vertex Live only. Force livekit-storage.json; strip AIza keys so Live stays on solvox-ai-007."""
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+    os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
+    os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_SERVICE_ACCOUNT_JSON
+    os.environ["GCS_SERVICE_ACCOUNT_JSON"] = GOOGLE_SERVICE_ACCOUNT_JSON
+    os.environ.pop("GOOGLE_API_KEY", None)
+    os.environ.pop("GEMINI_API_KEY", None)
 
 
 def build_google_realtime_model() -> google.realtime.RealtimeModel:
-    common = {
-        "voice": "Sulafat",
-        "temperature": 0.65,
-        "modalities": ["AUDIO"],
-        "instructions": _REALTIME_VOICE_INSTRUCTIONS,
-    }
-    if uses_gemini_developer_api():
-        logger.info("Gemini Live → Developer API model=%s", GEMINI_LIVE_API_MODEL)
-        return google.realtime.RealtimeModel(
-            model=GEMINI_LIVE_API_MODEL,
-            api_key=GOOGLE_API_KEY,
-            vertexai=False,
-            **common,
-        )
+    _prepare_vertex_env()
+    creds = GOOGLE_SERVICE_ACCOUNT_JSON
+    creds_ok = bool(creds) and (creds.startswith("{") or os.path.exists(creds))
     logger.info(
-        "Gemini Live → Vertex %s/%s model=%s",
+        "Gemini Live → Vertex only model=%s project=%s location=%s creds=%s",
+        GEMINI_LIVE_VERTEX_MODEL,
         GOOGLE_CLOUD_PROJECT,
         GOOGLE_CLOUD_LOCATION,
-        GEMINI_LIVE_VERTEX_MODEL,
+        creds if creds_ok else "MISSING",
     )
-    os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
-    os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
-    os.environ.pop("GOOGLE_API_KEY", None)
-    os.environ.pop("GEMINI_API_KEY", None)
+    if not creds_ok:
+        logger.error(
+            "Set GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json (Vertex + GCS). "
+            "Do not set GOOGLE_API_KEY and do not use solvoxai.json."
+        )
     return google.realtime.RealtimeModel(
         model=GEMINI_LIVE_VERTEX_MODEL,
+        voice="Sulafat",
+        temperature=0.65,
+        modalities=["AUDIO"],
+        instructions=_REALTIME_VOICE_INSTRUCTIONS,
         vertexai=True,
         project=GOOGLE_CLOUD_PROJECT,
         location=GOOGLE_CLOUD_LOCATION,
-        **common,
     )
 
 
 def _google_analysis_client():
     from google import genai as google_genai
 
-    if uses_gemini_developer_api():
-        return google_genai.Client(api_key=GOOGLE_API_KEY, vertexai=False)
-    os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
-    os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
+    _prepare_vertex_env()
     return google_genai.Client(
         vertexai=True,
         project=GOOGLE_CLOUD_PROJECT,
@@ -211,8 +208,6 @@ _BUSY_CALLBACK_RE = re.compile(
     r")"
 )
 
-# [C1] Single env var for GCS credentials used everywhere
-GCS_SERVICE_ACCOUNT_JSON = os.getenv("GCS_SERVICE_ACCOUNT_JSON", "livekit-storage.json")
 GCS_BUCKET_NAME          = os.getenv("GCS_BUCKET_NAME", "my_livekit_ecordings")
 
 # [M23] Declarative egress at CreateRoom (LiveKit Cloud style):

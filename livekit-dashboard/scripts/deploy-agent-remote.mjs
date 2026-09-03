@@ -5,8 +5,8 @@
  * Config: copy .deploy.env.example → .deploy.env in this folder.
  *
  * Examples:
- *   npm run agent:deploy:remote -- --name mahindra_scraping --entrypoint src/agent.py --push
- *   npm run agent:deploy:remote -- mahindra_scraping src/agent3.py --push
+ *   npm run agent:deploy:remote -- --name CTF-Agent --entrypoint src/agent.py --push
+ *   npm run agent:deploy:remote -- CTF-Agent src/agent3.py --push
  */
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -398,9 +398,9 @@ Agent parameters (CLI overrides .deploy.env):
   --entrypoint, -e, --file PATH   Python entrypoint, e.g. src/agent.py or src/agent3.py
 
 Examples:
-  npm run agent:deploy:remote -- --name mahindra_scraping --entrypoint src/agent.py --push
+  npm run agent:deploy:remote -- --name CTF-Agent --entrypoint src/agent.py --push
   npm run agent:deploy:remote -- sales_bot src/agent3.py --push
-  npm run agent:deploy:remote -- --name mahindra_scraping --no-push
+  npm run agent:deploy:remote -- --name CTF-Agent --no-push
 
 Flags:
   --push        git push before deploy (also when LV_GIT_PUSH=1 in .deploy.env)

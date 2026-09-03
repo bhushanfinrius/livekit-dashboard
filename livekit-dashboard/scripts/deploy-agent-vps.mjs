@@ -3,8 +3,8 @@
  * Deploy agent on the VPS itself (no SSH from laptop).
  * Run from livekit-dashboard/ after uploading livekit-dashboard + agent-starter-python.
  *
- *   node scripts/deploy-agent-vps.mjs deploy --name mahindra_scraping --entrypoint src/agent.py
- *   node scripts/deploy-agent-vps.mjs deploy mahindra_scraping src/agent.py
+ *   node scripts/deploy-agent-vps.mjs deploy --name CTF-Agent --entrypoint src/agent.py
+ *   node scripts/deploy-agent-vps.mjs deploy CTF-Agent src/agent.py
  *   node scripts/deploy-agent-vps.mjs logs
  */
 import { execSync } from "node:child_process";
@@ -210,14 +210,14 @@ Layout:
   /your/path/agent-starter-python/.env.local
 
 Commands (from livekit-dashboard/):
-  npm run agent:deploy:vps -- --name mahindra_scraping --entrypoint src/agent.py
-  npm run agent:deploy:vps -- mahindra_scraping src/agent.py
+  npm run agent:deploy:vps -- --name CTF-Agent --entrypoint src/agent.py
+  npm run agent:deploy:vps -- CTF-Agent src/agent.py
   npm run agent:logs:vps
   npm run agent:status:vps
   npm run agent:stop:vps
 
 Or without npm:
-  bash scripts/deploy-agent-vps.sh deploy mahindra_scraping src/agent.py
+  bash scripts/deploy-agent-vps.sh deploy CTF-Agent src/agent.py
 
 Flags:
   --name, -n          AGENT_NAME (required for deploy)
@@ -243,7 +243,7 @@ async function main() {
 
   if (command === "deploy") {
     if (!agentName) {
-      console.error("Agent name required: --name mahindra_scraping");
+      console.error("Agent name required: --name CTF-Agent");
       process.exit(1);
     }
     const { starter, buildContext } = await prepareRuntimeEnv(agentName, entrypoint);

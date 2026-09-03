@@ -26,8 +26,8 @@ _AUDIO = _CFG.get("audio") if isinstance(_CFG.get("audio"), dict) else {}
 
 AGENT_NAME = (
     os.getenv("AGENT_NAME", "").strip()
-    or str(_AGENT.get("name") or "my-agent").strip()
-    or "my-agent"
+    or str(_AGENT.get("name") or "CTF-Agent").strip()
+    or "CTF-Agent"
 )
 
 MODEL_PROVIDER = (

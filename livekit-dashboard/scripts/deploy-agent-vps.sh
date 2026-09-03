@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy agent on this VPS (no laptop SSH). Run from livekit-dashboard/.
 #
-#   bash scripts/deploy-agent-vps.sh deploy mahindra_scraping src/agent.py
+#   bash scripts/deploy-agent-vps.sh deploy CTF-Agent src/agent.py
 #   bash scripts/deploy-agent-vps.sh logs
 #   bash scripts/deploy-agent-vps.sh status
 #   bash scripts/deploy-agent-vps.sh stop
@@ -23,8 +23,8 @@ usage() {
   cat <<'EOF'
 Usage (from livekit-dashboard/ on the VPS):
 
-  bash scripts/deploy-agent-vps.sh deploy --name mahindra_scraping --entrypoint src/agent.py
-  bash scripts/deploy-agent-vps.sh deploy mahindra_scraping src/agent.py
+  bash scripts/deploy-agent-vps.sh deploy --name CTF-Agent --entrypoint src/agent.py
+  bash scripts/deploy-agent-vps.sh deploy CTF-Agent src/agent.py
   bash scripts/deploy-agent-vps.sh logs|status|stop
 
 Requires sibling folder: ../agent-starter-python/.env.local
@@ -117,7 +117,7 @@ EOF
 
 case "$CMD" in
   deploy)
-    [[ -n "$AGENT_NAME" ]] || { echo "Agent name required: --name mahindra_scraping" >&2; exit 1; }
+    [[ -n "$AGENT_NAME" ]] || { echo "Agent name required: --name CTF-Agent" >&2; exit 1; }
     prepare_runtime "$AGENT_NAME" "$AGENT_ENTRYPOINT"
     echo "Deploying $AGENT_NAME ($AGENT_ENTRYPOINT) from $STARTER"
     BUILD_FLAG="--build"

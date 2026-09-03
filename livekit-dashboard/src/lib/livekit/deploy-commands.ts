@@ -1,6 +1,6 @@
 import { toHttpLivekitUrl, toWsLivekitUrl } from "@/lib/livekit/url";
 
-export const DEFAULT_AGENT_NAME = "my-agent";
+export const DEFAULT_AGENT_NAME = "CTF-Agent";
 
 export type AgentDeployGuide = {
   httpUrl: string;

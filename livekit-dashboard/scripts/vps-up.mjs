@@ -57,7 +57,7 @@ function main() {
   console.log("\nVPS stack is up.");
   console.log(`  UI:      ${env.AUTH_URL || `http://${publicIp}:3000`}`);
   console.log(`  LiveKit: wss://${publicIp}:7880  (UAT / phones)`);
-  console.log(`  Agent:   npm run agent:deploy:vps -- mahindra_scraping src/agent.py`);
+  console.log(`  Agent:   npm run agent:deploy:vps -- --name CTF-Agent --entrypoint src/agent.py`);
 }
 
 main();

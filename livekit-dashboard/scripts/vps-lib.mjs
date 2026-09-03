@@ -1,5 +1,7 @@
+import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadKeyStore, substituteKeys } from "./keys-lib.mjs";
 
 export const VPS_COMPOSE_FILES = [
@@ -69,6 +71,21 @@ export function applyHostDatabaseUrl(dashboardRoot) {
   const next = hostDatabaseUrl(fromEnv);
   if (next) process.env.DATABASE_URL = next;
   return next;
+}
+
+/** This app generates Prisma into src/generated/prisma, not node_modules/@prisma/client. */
+export function generatePrismaClient(dashboardRoot) {
+  execSync("npx prisma generate", { cwd: dashboardRoot, stdio: "inherit", shell: true });
+}
+
+export async function loadPrismaClient(dashboardRoot) {
+  const clientPath = path.join(dashboardRoot, "src/generated/prisma/index.js");
+  if (!existsSync(clientPath)) generatePrismaClient(dashboardRoot);
+  const mod = await import(pathToFileURL(clientPath).href);
+  if (!mod.PrismaClient) {
+    throw new Error("Prisma client is missing PrismaClient. Run: npx prisma generate");
+  }
+  return mod.PrismaClient;
 }
 
 function looksLikeFilePath(value) {

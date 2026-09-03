@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { applyHostDatabaseUrl, ensureVpsEnvExample, loadDotEnv, renderLivekitRuntimeConfig, VPS_COMPOSE_FILES } from "./vps-lib.mjs";
+import { applyHostDatabaseUrl, ensureVpsEnvExample, generatePrismaClient, loadDotEnv, loadPrismaClient, renderLivekitRuntimeConfig, VPS_COMPOSE_FILES } from "./vps-lib.mjs";
 import { upsertEnvLine } from "./keys-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,23 +50,26 @@ function upsertEnv(updates) {
 
 async function waitForPostgres() {
   applyHostDatabaseUrl(ROOT);
-  const { PrismaClient } = await import("@prisma/client");
-  let lastError;
   for (let attempt = 1; attempt <= 30; attempt += 1) {
-    const prisma = new PrismaClient();
     try {
-      await prisma.$queryRaw`SELECT 1`;
-      await prisma.$disconnect();
+      execSync(`${COMPOSE} exec -T postgres pg_isready -U deck`, {
+        cwd: ROOT,
+        stdio: "ignore",
+        shell: true,
+      });
       return;
-    } catch (error) {
-      lastError = error;
-      await prisma.$disconnect().catch(() => {});
+    } catch {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
-  throw new Error(
-    `Postgres is not reachable at ${process.env.DATABASE_URL}. ${lastError instanceof Error ? lastError.message : ""}`,
-  );
+
+  const PrismaClient = await loadPrismaClient(ROOT);
+  const prisma = new PrismaClient();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 function agentRunning() {
@@ -98,7 +101,8 @@ async function main() {
   if (!env.SIP_PUBLIC_PORT?.trim()) sipUpdates.SIP_PUBLIC_PORT = "5060";
   upsertEnv(sipUpdates);
 
-  console.log("\n→ 1/5  LiveKit key pool + .env secrets");
+  console.log("\n→ 1/6  Prisma client + LiveKit key pool");
+  generatePrismaClient(ROOT);
   await runKeys();
 
   const sipConfig = path.join(ROOT, "config", "sip.vps.yaml");
@@ -108,34 +112,34 @@ async function main() {
   const livekitRuntime = renderLivekitRuntimeConfig(ROOT, publicIp);
   console.log(`  LiveKit VPS config → ${livekitRuntime}`);
 
-  console.log("\n→ 2/5  Postgres (so host scripts can reassign keys)");
+  console.log("\n→ 2/6  Postgres (so host scripts can reassign keys)");
   run(`${COMPOSE} up -d postgres redis`);
   await waitForPostgres();
   console.log(`  database ${process.env.DATABASE_URL}`);
 
-  console.log("\n→ 3/5  Rebuild stack");
+  console.log("\n→ 3/6  Rebuild stack");
   const services = withAgent
     ? "postgres redis livekit sip egress deck agent"
     : "postgres redis livekit sip egress deck";
   const profile = withAgent ? " --profile agent" : "";
   run(`${COMPOSE}${profile} up -d --build --force-recreate ${services}`);
 
-  console.log("\n→ 4/5  Move existing projects onto the key pool");
+  console.log("\n→ 4/6  Move existing projects onto the key pool");
   await runKeys(["--reassign"]);
   await runKeys(["--show"]);
 
   if (withAgent || agentRunning()) {
-    console.log("\n→ 5/5  Recreate agent so it drops the retired shared key");
+    console.log("\n→ 5/6  Recreate agent so it drops the retired shared key");
     run(`${COMPOSE} --profile agent up -d --force-recreate --no-deps agent`);
   } else {
-    console.log("\n→ 5/5  No agent container — skip. Later: npm run agent:deploy:vps");
+    console.log("\n→ 5/6  No agent container — skip. Later: npm run vps:install:agent");
   }
 
   console.log(`
 VPS is up.
 
   UI:      ${env.AUTH_URL}
-  LiveKit: wss://${publicIp}:7880
+  LiveKit: ws://${publicIp}:7880
   SIP:     sip:${sipUpdates.SIP_PUBLIC_HOST || env.SIP_PUBLIC_HOST || publicIp}
 
 Talk a project, then check Settings for Project ID / URL / SIP URI.

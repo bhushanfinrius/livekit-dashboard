@@ -30,7 +30,7 @@ import {
   saveKeyStore,
   upsertEnvLine,
 } from "./keys-lib.mjs";
-import { applyHostDatabaseUrl, loadDotEnv, parseEnvFile } from "./vps-lib.mjs";
+import { applyHostDatabaseUrl, loadDotEnv, loadPrismaClient, parseEnvFile } from "./vps-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -47,7 +47,7 @@ function flagValue(name, fallback = null) {
 
 async function withPrisma(run) {
   applyHostDatabaseUrl(ROOT);
-  const { PrismaClient } = await import("@prisma/client");
+  const PrismaClient = await loadPrismaClient(ROOT);
   const prisma = new PrismaClient();
   try {
     return await run(prisma);

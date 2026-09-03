@@ -113,12 +113,14 @@ export const AGENT_ROOM_PREFIXES = ["test-", "camp-", "deck-call-", "deck-consol
  */
 export async function applyDeckTranscriptEnv(dashboardRoot, env) {
   const next = { ...env };
-  const secret = loadDotEnv(dashboardRoot).DECK_TRANSCRIPT_SECRET?.trim();
+  const dash = loadDotEnv(dashboardRoot);
+  const secret = dash.DECK_TRANSCRIPT_SECRET?.trim();
   if (secret) next.DECK_TRANSCRIPT_SECRET = secret;
 
+  const forcedId = dash.DECK_PROJECT_ID?.trim();
   const apiKey = next.LIVEKIT_API_KEY?.trim();
-  if (!apiKey) {
-    console.warn("No LIVEKIT_API_KEY in agent env — cannot set DECK_TRANSCRIPT_URL");
+  if (!apiKey && !forcedId) {
+    console.warn("No LIVEKIT_API_KEY or DECK_PROJECT_ID — cannot set DECK_TRANSCRIPT_URL");
     return next;
   }
 
@@ -126,12 +128,21 @@ export async function applyDeckTranscriptEnv(dashboardRoot, env) {
   const PrismaClient = await loadPrismaClient(dashboardRoot);
   const prisma = new PrismaClient();
   try {
-    const project = await prisma.project.findFirst({
-      where: {
-        OR: [{ livekitApiKey: apiKey }, { apiKeys: { some: { apiKey } } }],
-      },
-      select: { id: true },
-    });
+    let project = forcedId
+      ? await prisma.project.findUnique({ where: { id: forcedId }, select: { id: true } })
+      : null;
+    if (forcedId && !project) {
+      console.warn(`DECK_PROJECT_ID=${forcedId} was not found in the database`);
+    }
+    if (!project && apiKey) {
+      project = await prisma.project.findFirst({
+        where: {
+          OR: [{ livekitApiKey: apiKey }, { apiKeys: { some: { apiKey } } }],
+        },
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      });
+    }
     if (!project) {
       console.warn(
         "No LumiVoice project owns this LIVEKIT_API_KEY — transcripts will not ingest.",

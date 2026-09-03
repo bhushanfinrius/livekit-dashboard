@@ -150,6 +150,27 @@ describe("parseSessionTranscripts", () => {
     expect(lines[0]?.at).toBe("2026-08-21T10:00:01.000Z");
   });
 
+  it("reads ingest lines that only have role + offsetMs", () => {
+    const lines = parseSessionTranscripts(
+      [
+        {
+          event: "transcription",
+          room: { name: "test-2e551bbd-20260903_181429_538849" },
+          transcription: {
+            text: "Yeah, tell me.",
+            role: "user",
+            offsetMs: 0,
+            final: true,
+          },
+        },
+      ],
+      new Set(),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.speaker).toBe("user");
+    expect(lines[0]?.text).toBe("Yeah, tell me.");
+  });
+
   it("collapses duplicate live + session-report lines", () => {
     const payload = {
       event: "transcription",

@@ -96,25 +96,42 @@ export function sessionDisplayId(session: SessionSnapshot) {
   return session.id;
 }
 
+/** Room name from a sessions URL id such as egress:test-…:timestamp. */
+export function roomNameFromSessionRef(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (raw.startsWith("egress:")) {
+    const rest = raw.slice("egress:".length);
+    const lastColon = rest.lastIndexOf(":");
+    const room = (lastColon > 0 ? rest.slice(0, lastColon) : rest).trim();
+    return room || null;
+  }
+  if (/^(test|camp|deck-call|deck-console)-/i.test(raw)) return raw;
+  return null;
+}
+
 export function findSessionSnapshot(
   sessions: SessionSnapshot[],
   sessionId: string,
 ): SessionSnapshot | undefined {
+  const roomFromId = roomNameFromSessionRef(sessionId);
   return sessions.find(
     (item) =>
       item.id === sessionId ||
       item.roomSid === sessionId ||
       item.roomName === sessionId ||
+      item.roomName === roomFromId ||
       sessionDisplayId(item) === sessionId,
   );
 }
 
 export function sessionLookupKeys(session: SessionSnapshot, sessionId?: string): string[] {
-  return Array.from(
-    new Set(
-      [session.roomName, session.roomSid, session.id, sessionId]
-        .map((value) => value?.trim())
-        .filter((value): value is string => Boolean(value)),
-    ),
-  );
+  const keys = new Set<string>();
+  for (const seed of [session.roomName, session.roomSid, session.id, sessionId]) {
+    const trimmed = seed?.trim();
+    if (trimmed) keys.add(trimmed);
+    const room = roomNameFromSessionRef(seed);
+    if (room) keys.add(room);
+  }
+  return [...keys];
 }

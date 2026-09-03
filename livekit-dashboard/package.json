@@ -12,6 +12,7 @@
     "vps:setup": "node scripts/vps-setup.mjs",
     "vps:install": "node scripts/vps-install.mjs",
     "vps:install:agent": "node scripts/vps-install.mjs --agent",
+    "vps:sync-transcripts": "node scripts/sync-transcript-env.mjs",
     "vps:reset": "node scripts/vps-reset.mjs --fix --yes",
     "vps:reset:hard": "node scripts/vps-reset.mjs --hard",
     "agent:deploy": "docker compose --profile agent up -d --build agent",

@@ -102,7 +102,10 @@ function collectSegments(
         record.endTime != null ||
         record.end_time != null ||
         record.final != null ||
-        record.language != null),
+        record.language != null ||
+        record.offsetMs != null ||
+        record.offset_ms != null ||
+        record.role != null),
   );
   if (!isSegment || !text || record.final === false) return;
 

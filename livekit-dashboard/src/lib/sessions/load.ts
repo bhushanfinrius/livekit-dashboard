@@ -10,6 +10,8 @@ import { resolvePlayableUrl } from "@/lib/gcs";
 import { mergeEgressIntoSessions, reconstructSessions, sessionOverlapsRange } from "@/lib/sessions/reconstruct";
 import {
   SESSION_EVENT_TYPES,
+  findSessionSnapshot,
+  sessionLookupKeys,
   type SessionDetailPayload,
   type SessionSnapshot,
   type SessionsPayload,
@@ -220,55 +222,69 @@ function webrtcMinutes(session: SessionSnapshot, now: number) {
   return Math.round((ms / 60000) * 10) / 10;
 }
 
+const SESSION_DETAIL_EVENT_SELECT = {
+  id: true,
+  eventType: true,
+  roomName: true,
+  participantIdentity: true,
+  egressId: true,
+  ingressId: true,
+  createdAt: true,
+  rawPayload: true,
+} as const;
+
 export async function loadSessionDetail(
   projectId: string,
   sessionId: string,
   livekit?: ProjectLiveKit | null,
 ): Promise<SessionDetailPayload | null> {
   const payload = await loadSessions(projectId, "30d");
-  const session = payload.sessions.find((item) => item.id === sessionId);
+  const session = findSessionSnapshot(payload.sessions, sessionId);
   if (!session) return null;
 
   const now = Date.now();
   const started = new Date(Date.parse(session.startedAt) - 1000);
   const ended = new Date((session.endedAt ? Date.parse(session.endedAt) : now) + 1000);
-  // Session-report dumps land a few seconds after hangup; keep a wider window for those rows.
-  const transcriptEnded = new Date(ended.getTime() + 5 * 60_000);
-  const rows = await prisma.webhookEvent.findMany({
-    where: {
-      projectId,
-      OR: [
-        {
-          roomName: session.roomName,
-          eventType: "transcription",
-          createdAt: { gte: started, lte: transcriptEnded },
-        },
-        {
-          createdAt: { gte: started, lte: ended },
-          OR: [
-            { roomName: session.roomName },
-            { eventType: { in: ["egress_started", "egress_updated", "egress_ended"] } },
-          ],
-        },
-      ],
-    },
-    orderBy: { createdAt: "desc" },
-    take: 400,
-    select: {
-      id: true,
-      eventType: true,
-      roomName: true,
-      participantIdentity: true,
-      egressId: true,
-      ingressId: true,
-      createdAt: true,
-      rawPayload: true,
-    },
-  });
-  const scopedRows = rows.filter((row) => {
-    if (row.roomName === session.roomName) return true;
-    return parseRoomMeta(row.rawPayload).name === session.roomName;
-  });
+  const roomKeys = sessionLookupKeys(session, sessionId);
+  const transcriptStarted = new Date(started.getTime() - 2 * 60_000);
+
+  const [eventRows, transcriptRows] = await Promise.all([
+    prisma.webhookEvent.findMany({
+      where: {
+        projectId,
+        createdAt: { gte: started, lte: ended },
+        roomName: { in: roomKeys },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 400,
+      select: SESSION_DETAIL_EVENT_SELECT,
+    }),
+    // Query transcriptions on their own. Mixing them with project-wide egress
+    // rows and take:400 dropped live [deck-transcript] posts from Agent Insights.
+    prisma.webhookEvent.findMany({
+      where: {
+        projectId,
+        eventType: "transcription",
+        roomName: { in: roomKeys },
+        createdAt: { gte: transcriptStarted },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 500,
+      select: SESSION_DETAIL_EVENT_SELECT,
+    }),
+  ]);
+
+  const byId = new Map<string, (typeof eventRows)[number]>();
+  for (const row of [...eventRows, ...transcriptRows]) {
+    byId.set(row.id, row);
+  }
+  const scopedRows = [...byId.values()]
+    .filter((row) => {
+      if (row.roomName && roomKeys.includes(row.roomName)) return true;
+      const payloadRoom = parseRoomMeta(row.rawPayload).name;
+      return Boolean(payloadRoom && roomKeys.includes(payloadRoom));
+    })
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
   let liveRecordings = [] as ReturnType<typeof recordingsFromEgressInfo>;
   const kit = livekit ?? (await getProjectLiveKitForWebhook(projectId));

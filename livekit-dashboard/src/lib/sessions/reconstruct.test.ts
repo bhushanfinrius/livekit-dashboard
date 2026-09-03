@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mergeEgressIntoSessions, reconstructSessions } from "@/lib/sessions/reconstruct";
-import { sessionDisplayId, type SessionSnapshot } from "@/lib/sessions/types";
+import { findSessionSnapshot, sessionDisplayId, sessionLookupKeys, type SessionSnapshot } from "@/lib/sessions/types";
 
 function session(partial: Partial<SessionSnapshot> & Pick<SessionSnapshot, "id" | "roomName">): SessionSnapshot {
   return {
@@ -123,6 +123,28 @@ describe("sessionDisplayId", () => {
         }),
       ),
     ).toBe("test-2e551bbd-20260903");
+  });
+
+  it("finds a session by room name, roomSid, or display id", () => {
+    const item = session({
+      id: "implicit:wh-1",
+      roomName: "test-2e551bbd-20260903_174752_957041",
+      roomSid: "RM_abc123",
+    });
+    expect(findSessionSnapshot([item], "RM_abc123")?.id).toBe(item.id);
+    expect(findSessionSnapshot([item], item.roomName)?.id).toBe(item.id);
+    expect(findSessionSnapshot([item], "implicit:wh-1")?.id).toBe(item.id);
+  });
+
+  it("looks up transcripts by room name even when the URL is an RM_ sid", () => {
+    const item = session({
+      id: "implicit:wh-1",
+      roomName: "test-2e551bbd-20260903_174752_957041",
+      roomSid: "RM_abc123",
+    });
+    expect(sessionLookupKeys(item, "RM_abc123")).toEqual(
+      expect.arrayContaining(["test-2e551bbd-20260903_174752_957041", "RM_abc123"]),
+    );
   });
 });
 

@@ -36,8 +36,8 @@ describe("credentialMountHostPath", () => {
 
   it("maps starter mount paths to compose-relative bind mounts", () => {
     process.env.AGENT_STARTER_MOUNT = "/agent-starter";
-    expect(credentialMountHostPath("/agent-starter/solvoxai.json")).toBe(
-      "./agent-starter-python/solvoxai.json",
+    expect(credentialMountHostPath("/agent-starter/livekit-storage.json")).toBe(
+      "./agent-starter-python/livekit-storage.json",
     );
   });
 });

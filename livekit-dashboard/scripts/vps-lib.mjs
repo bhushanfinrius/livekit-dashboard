@@ -194,15 +194,15 @@ export function syncAgentCredentialMounts(dashboardRoot) {
   if (!existsSync(envLocal)) {
     console.warn(
       `Missing ${envLocal} — Vertex/GCS JSON files will not be mounted.\n` +
-        "  Put solvoxai.json and livekit-storage.json in agent-starter-python/ and set\n" +
-        "  GOOGLE_APPLICATION_CREDENTIALS=solvoxai.json (and GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json).",
+        "  Put livekit-storage.json in agent-starter-python/ and set\n" +
+        "  GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json (Vertex + GCS share this file).",
     );
     return { mounts: [], starter };
   }
 
   const starterEnv = parseEnvFile(readFileSync(envLocal, "utf8"));
   if (!starterEnv.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-    starterEnv.GOOGLE_APPLICATION_CREDENTIALS = "solvoxai.json";
+    starterEnv.GOOGLE_APPLICATION_CREDENTIALS = "livekit-storage.json";
   }
   if (!starterEnv.GCS_SERVICE_ACCOUNT_JSON?.trim()) {
     starterEnv.GCS_SERVICE_ACCOUNT_JSON = "livekit-storage.json";
@@ -230,8 +230,7 @@ export function syncAgentCredentialMounts(dashboardRoot) {
 
   if (mounts.length === 0) {
     console.warn(
-      "No Vertex/GCS credential files found to mount. Expected on the VPS:\n" +
-        `  ${path.join(starter, "solvoxai.json")}\n` +
+      "No Vertex/GCS credential file found to mount. Expected on the VPS:\n" +
         `  ${path.join(starter, "livekit-storage.json")}`,
     );
   } else {

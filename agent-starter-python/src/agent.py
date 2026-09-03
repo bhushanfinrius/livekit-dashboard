@@ -132,6 +132,13 @@ _NOT_INTERESTED_RE = re.compile(
     r"call\s*mat\s*karo|"
     r"don't\s+want|not\s+now)"
 )
+_BUSY_CALLBACK_RE = re.compile(
+    r"(?i)(busy|call\s*back|callback|call\s+me\s+later|later|"
+    r"बाद\s*में|"
+    r"abhi\s*(busy|nahi|time\s+nahi)|not\s+a\s+good\s+time|"
+    r"phir\s+(se\s+)?call|phone\s+karo|"
+    r"\d{1,2}\s*[:.]\s*\d{2}\s*(am|pm)?)"
+)
 
 # [C1] Single env var for GCS credentials used everywhere
 GCS_SERVICE_ACCOUNT_JSON = os.getenv("GCS_SERVICE_ACCOUNT_JSON", "livekit-storage.json")
@@ -181,7 +188,12 @@ async def send_webhook(payload: dict):
 
 
 async def post_deck_transcript(room_name: str, speaker: str, identity: str, text: str) -> None:
-    if not DECK_TRANSCRIPT_URL or not text.strip():
+    if not text.strip():
+        return
+    if not DECK_TRANSCRIPT_URL:
+        logger.warning(
+            "[deck-transcript] DECK_TRANSCRIPT_URL is empty — LumiVoice will not store this line"
+        )
         return
     headers = {}
     if DECK_TRANSCRIPT_SECRET:
@@ -199,9 +211,48 @@ async def post_deck_transcript(room_name: str, speaker: str, identity: str, text
                 headers=headers,
             )
             if resp.status_code >= 400:
-                logger.warning("[deck-transcript] HTTP %s: %s", resp.status_code, resp.text[:200])
+                logger.warning(
+                    "[deck-transcript] HTTP %s %s — %s",
+                    resp.status_code,
+                    DECK_TRANSCRIPT_URL,
+                    resp.text[:200],
+                )
+            else:
+                logger.debug("[deck-transcript] stored %s/%s", room_name, speaker)
     except Exception as exc:
-        logger.warning("[deck-transcript] failed: %s", exc)
+        logger.warning("[deck-transcript] POST %s failed: %s", DECK_TRANSCRIPT_URL, exc)
+
+
+def _deck_claim_url() -> str:
+    url = DECK_TRANSCRIPT_URL.rstrip("/")
+    if url.endswith("/sessions/transcripts"):
+        return url[: -len("/sessions/transcripts")] + "/rooms/claim"
+    return ""
+
+
+async def register_deck_room(room_name: str) -> None:
+    """Tell LumiVoice this room belongs to the transcript project so join webhooks ingest."""
+    if not DECK_TRANSCRIPT_URL:
+        logger.warning(
+            "[deck-room] DECK_TRANSCRIPT_URL is empty — LumiVoice will not get transcripts or joins"
+        )
+        return
+    claim = _deck_claim_url()
+    if not claim:
+        logger.warning("[deck-room] cannot derive claim URL from %s", DECK_TRANSCRIPT_URL)
+        return
+    headers = {}
+    if DECK_TRANSCRIPT_SECRET:
+        headers["x-deck-transcript-secret"] = DECK_TRANSCRIPT_SECRET
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(claim, json={"roomName": room_name}, headers=headers)
+            if resp.status_code >= 400:
+                logger.warning("[deck-room] HTTP %s: %s", resp.status_code, resp.text[:200])
+            else:
+                logger.info("[deck-room] registered %s", room_name)
+    except Exception as exc:
+        logger.warning("[deck-room] failed: %s", exc)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1455,7 +1506,7 @@ async def _complete_call_shutdown(
     *,
     delay_seconds: float = 0,
 ) -> None:
-    """Recording → analysis → webhooks → hangup. Safe to call from multiple paths."""
+    """Recording/analysis/webhooks after the SIP room is already gone. Safe to call from multiple paths."""
     if state._shutdown_task and not state._shutdown_task.done():
         await state._shutdown_task
         return
@@ -1465,9 +1516,10 @@ async def _complete_call_shutdown(
 
     async def _run() -> None:
         try:
+            # Hang up the SIP leg first; recording/analysis/Solvox webhooks continue in-process.
+            await hangup_call(delay_seconds=delay_seconds)
             await _handle_call_end(state)
             await _close_agent_session(state)
-            await hangup_call(delay_seconds=delay_seconds)
             logger.info(f"[{state.room_name}] ✅ Call shutdown complete")
         except Exception as e:
             logger.error(f"[{state.room_name}] Shutdown failed: {e}", exc_info=True)
@@ -1918,7 +1970,11 @@ Once the details are locked and confirmed, execute the exit:
 > Hinglish: "कोई बात नहीं... आपका time देने के लिए... शुक्रिया। अगर future में... आप इसके बारे में consider करें... तो हम आपकी मदद के लिए... हमेशा available हैं। Have a great day!"
 > English: "No problem at all... thank you for your time. If you reconsider this... in the future... we're here to help. Have a great day!"
 
-Then call end_call.
+**If busy / call back later:**
+> Hinglish: "ठीक है जी... मैं [time] पर call करूँगी। आपका समय देने के लिए शुक्रिया। Have a good day!"
+> English: "Of course... I'll call you back at [time]. Thank you for your time. Have a good day!"
+
+Immediately after ANY closing goodbye (qualified, not interested, busy, or callback), call end_call in the SAME turn. Do not keep pitching. Do not wait for recording or analysis.
 
 ---
 
@@ -1930,7 +1986,7 @@ Then call end_call.
 - Never sound aggressive or pushy — keep the energy high-level, corporate, and consultative.
 - Never guess scrap valuation amounts, tax/discount percentages, or government benefit figures.
 - Never state a national legal threshold as universal if it's actually a city/state-specific rule (e.g., NCR plying bans vs. the central Scrappage Policy's fitness-based criteria) — this is a compliance and trust risk.
-- Never call end_call before validating name + vehicle details + contact channel details unless the prospect explicitly hangs up.
+- Never call end_call before validating name + vehicle details + contact channel details unless the prospect is busy, asks to be called back, is not interested, or hangs up.
 - Never call end_call when the prospect says go-ahead / listening phrases: "जी बोलिए", "hello", "haan boliye", "go ahead", "tell me", "continue", "suniye" — those mean KEEP TALKING.
 - Never break the **Strict Scope Protection Rule** — do not assist with any information outside of Mahindra Accelo parameters.
 
@@ -1938,7 +1994,8 @@ Then call end_call.
 
 🎯 ALWAYS STAY ON:
 - Vehicle scrapping eligibility, process, and organizational capabilities (Authorized Vehicle Scrapping Facility, CoD, CERO recycling).
-- Capturing name, vehicle details, and validated contact details before exit.
+- Capturing name, vehicle details, and validated contact details before exit — unless they ask to stop or call back.
+- After a spoken goodbye, calling end_call immediately so the phone hangs up.
 - Seamlessly matching the prospect's language code turn by turn.
 
 ---
@@ -1972,6 +2029,13 @@ def looks_like_not_interested(text: str) -> bool:
     return bool(_NOT_INTERESTED_RE.search(cleaned))
 
 
+def looks_like_busy_callback(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    return bool(_BUSY_CALLBACK_RE.search(cleaned))
+
+
 def end_call_allowed(state: CallState) -> tuple[bool, str]:
     """Return (allowed, reason). Blocks premature Gemini end_call on go-ahead phrases."""
     if state.callee_hung_up or state.amd_voicemail:
@@ -1986,6 +2050,9 @@ def end_call_allowed(state: CallState) -> tuple[bool, str]:
 
     if last and looks_like_not_interested(last) and turns >= 2:
         return True, "prospect declined"
+
+    if last and looks_like_busy_callback(last) and turns >= 2:
+        return True, "prospect asked to call back"
 
     if conv < END_CALL_MIN_CONV_SECONDS:
         return False, (
@@ -2031,8 +2098,9 @@ class LumiverseSalesAgent(Agent):
     @function_tool(
         name="end_call",
         description=(
-            "Hang up ONLY after name + mobile + city are collected and confirmed, "
-            "OR when the prospect clearly says not interested / stop calling / goodbye. "
+            "Hang up after you have spoken a closing goodbye: details confirmed, "
+            "not interested, busy, or call-back requested. "
+            "Speak the goodbye first, then call this tool immediately. "
             "NEVER use when they say go ahead, जी बोलिए, hello, haan boliye, or tell me."
         ),
     )
@@ -2313,6 +2381,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     state = CallState(ctx)
+    asyncio.create_task(register_deck_room(state.room_name))
     state.recording_active, state.recording_needs_fallback = await ensure_room_recording(
         state.room_name
     )

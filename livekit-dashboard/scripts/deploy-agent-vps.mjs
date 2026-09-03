@@ -14,8 +14,10 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   buildAgentComposeOverride,
+  encodeEnvFile,
   parseEnvFile,
   resolveCredentialMounts,
+  applyDeckTranscriptEnv,
 } from "./vps-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,14 +42,6 @@ function starterDir() {
       : path.resolve(DASHBOARD_ROOT, fromEnv);
   }
   return path.resolve(DASHBOARD_ROOT, "../agent-starter-python");
-}
-
-function encodeEnvFile(values) {
-  return (
-    Object.entries(values)
-      .map(([key, value]) => `${key}=${JSON.stringify(String(value))}`)
-      .join("\n") + "\n"
-  );
 }
 
 function normalizeEntrypoint(value) {
@@ -110,7 +104,7 @@ function ensureComposeOverride(entrypoint, mounts = []) {
   }
 }
 
-function prepareRuntimeEnv(agentName, entrypoint) {
+async function prepareRuntimeEnv(agentName, entrypoint) {
   const starter = starterDir();
   const envLocal = path.join(starter, ".env.local");
   if (!existsSync(envLocal)) {
@@ -128,13 +122,13 @@ function prepareRuntimeEnv(agentName, entrypoint) {
     starterEnv,
   );
 
-  const merged = {
+  const merged = await applyDeckTranscriptEnv(DASHBOARD_ROOT, {
     ...credEnv,
     LIVEKIT_URL: "ws://livekit:7880",
     AGENT_NAME: agentName,
     AGENT_ENTRYPOINT: entrypoint,
     SKIP_CREDIT_CHECK: credEnv.SKIP_CREDIT_CHECK?.trim() || "1",
-  };
+  });
 
   writeFileSync(path.join(DASHBOARD_ROOT, RUNTIME_ENV), encodeEnvFile(merged), "utf8");
   writeFileSync(
@@ -242,7 +236,7 @@ async function main() {
       console.error("Agent name required: --name mahindra_scraping");
       process.exit(1);
     }
-    const { starter, buildContext } = prepareRuntimeEnv(agentName, entrypoint);
+    const { starter, buildContext } = await prepareRuntimeEnv(agentName, entrypoint);
     console.log(`Starter: ${starter}`);
     console.log(`Deploying "${agentName}" (${entrypoint})…`);
     const buildFlag = flags.has("--no-build") ? "--no-build" : "--build";

@@ -1,3 +1,5 @@
+import type { KindBucket } from "@/lib/overview/payload";
+
 export type EgressJobType =
   | "room composite"
   | "web"
@@ -27,6 +29,7 @@ export type EgressSnapshot = {
   output: string | null;
   error: string | null;
   active: boolean;
+  identities: { identity: string; kind: KindBucket }[];
 };
 
 export type IngressInputLabel = "RTMP" | "WHIP" | "URL" | "unknown";

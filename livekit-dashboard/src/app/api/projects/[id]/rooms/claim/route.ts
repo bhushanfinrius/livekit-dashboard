@@ -2,10 +2,13 @@ import { jsonError, jsonOk } from "@/lib/http";
 import { readJsonBody } from "@/lib/api/project";
 import { authorizeDeckAgent } from "@/lib/events/deck-ingest-auth";
 import { registerProjectRoom } from "@/lib/events/attribution";
-import { storeTranscriptEvent } from "@/lib/events/store";
-import { transcriptIngestSchema } from "@/lib/validators/transcript";
+import { z } from "zod";
 
 export const dynamic = "force-dynamic";
+
+const claimSchema = z.object({
+  roomName: z.string().trim().min(1).max(256),
+});
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -18,20 +21,11 @@ export async function POST(request: Request, context: RouteContext) {
 
   const body = await readJsonBody(request);
   if (body.error) return body.error;
-  const parsed = transcriptIngestSchema.safeParse(body.data);
+  const parsed = claimSchema.safeParse(body.data);
   if (!parsed.success) {
-    return jsonError(parsed.error.issues[0]?.message ?? "Invalid transcript", 400, "VALIDATION");
+    return jsonError(parsed.error.issues[0]?.message ?? "Invalid room", 400, "VALIDATION");
   }
 
   await registerProjectRoom(auth.projectId, parsed.data.roomName);
-
-  const event = await storeTranscriptEvent(auth.projectId, {
-    roomName: parsed.data.roomName,
-    speaker: parsed.data.speaker,
-    identity: parsed.data.identity,
-    text: parsed.data.text,
-    at: parsed.data.at,
-    offsetMs: parsed.data.offsetMs,
-  });
-  return jsonOk({ id: event.id }, 201);
+  return jsonOk({ ok: true, roomName: parsed.data.roomName });
 }

@@ -220,7 +220,73 @@ type EgressSessionSeed = {
   startedAt: string | null;
   endedAt: string | null;
   active: boolean;
+  identities?: { identity: string; kind: KindBucket }[];
 };
+
+function collectIdentities(jobs: EgressSessionSeed[]): { identity: string; kind: KindBucket }[] {
+  const seen = new Map<string, KindBucket>();
+  for (const job of jobs) {
+    for (const entry of job.identities ?? []) {
+      if (!seen.has(entry.identity)) seen.set(entry.identity, entry.kind);
+    }
+  }
+  return [...seen.entries()].map(([identity, kind]) => ({ identity, kind }));
+}
+
+function campaignFallbackIdentities(roomName: string): { identity: string; kind: KindBucket }[] {
+  if (!/^(test|camp)-/i.test(roomName)) return [];
+  return [
+    { identity: "agent", kind: "agent" },
+    { identity: "sip", kind: "sip" },
+  ];
+}
+
+function participantsFromIdentities(
+  identities: { identity: string; kind: KindBucket }[],
+  startedAt: string,
+  endedAt: string | null,
+): SessionParticipant[] {
+  return identities.map((entry) => ({
+    identity: entry.identity,
+    kind: entry.kind,
+    joinedAt: startedAt,
+    leftAt: endedAt,
+  }));
+}
+
+function featuresFromParticipants(
+  features: SessionFeature[],
+  participants: SessionParticipant[],
+): SessionFeature[] {
+  const next = new Set(features);
+  if (participants.some((participant) => participant.kind === "sip")) next.add("sip");
+  if (participants.some((participant) => participant.kind === "agent")) next.add("agent");
+  return [...next];
+}
+
+function enrichSession(
+  session: SessionSnapshot,
+  identities: { identity: string; kind: KindBucket }[],
+): SessionSnapshot {
+  const resolved =
+    identities.length > 0 ? identities : campaignFallbackIdentities(session.roomName);
+  const participants =
+    session.participants.length > 0
+      ? session.participants
+      : resolved.length > 0
+        ? participantsFromIdentities(resolved, session.startedAt, session.endedAt)
+        : session.participants;
+  const features = featuresFromParticipants(session.features, participants);
+  const implicit = session.status === "ended" && features.includes("egress") ? false : session.implicit;
+  return {
+    ...session,
+    participants,
+    participantCount: Math.max(session.participantCount, participants.length),
+    peakParticipants: Math.max(session.peakParticipants, participants.length),
+    features,
+    implicit,
+  };
+}
 
 export function mergeEgressIntoSessions(
   sessions: SessionSnapshot[],
@@ -259,23 +325,34 @@ export function mergeEgressIntoSessions(
       session.roomName === roomName && sessionOverlapsRange(session, started, rangeEnd, now),
     );
     if (overlaps) continue;
-    extras.push({
-      id: `egress:${roomName}:${started}`,
-      roomName,
-      roomSid: null,
-      startedAt: new Date(started).toISOString(),
-      endedAt: ended ? new Date(ended).toISOString() : null,
-      durationSeconds: Math.max(0, Math.round(((ended ?? now) - started) / 1000)),
-      status: ended ? "ended" : "live",
-      peakParticipants: 0,
-      participantCount: 0,
-      implicit: true,
-      features: ["egress"] satisfies SessionFeature[],
-      participants: [],
-    });
+    const startedAt = new Date(started).toISOString();
+    const endedAt = ended ? new Date(ended).toISOString() : null;
+    extras.push(
+      enrichSession(
+        {
+          id: `egress:${roomName}:${started}`,
+          roomName,
+          roomSid: null,
+          startedAt,
+          endedAt,
+          durationSeconds: Math.max(0, Math.round(((ended ?? now) - started) / 1000)),
+          status: ended ? "ended" : "live",
+          peakParticipants: 0,
+          participantCount: 0,
+          implicit: true,
+          features: ["egress"] satisfies SessionFeature[],
+          participants: [],
+        },
+        collectIdentities(group),
+      ),
+    );
   }
 
-  return [...withFeature, ...extras].sort(
+  const enriched = withFeature.map((session) =>
+    enrichSession(session, collectIdentities(byRoom.get(session.roomName) ?? [])),
+  );
+
+  return [...enriched, ...extras].sort(
     (a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt) || a.id.localeCompare(b.id),
   );
 }

@@ -49,6 +49,15 @@ export async function resolveProjectIdForRoom(roomName: string | null | undefine
     if (matches.length > 0) return matches[0].projectId;
   }
 
-  const projects = await prisma.project.findMany({ select: { id: true }, take: 2 });
+  const projects = await prisma.project.findMany({ select: { id: true } });
+  if (name && projects.length > 0) {
+    const contained = projects.filter((row) => name.includes(row.id));
+    if (contained.length === 1) return contained[0].id;
+    const prefixHits = projects.filter(
+      (row) => row.id.length >= 8 && name.includes(row.id.slice(0, 8)),
+    );
+    if (prefixHits.length === 1) return prefixHits[0].id;
+  }
+
   return projects.length === 1 ? projects[0].id : null;
 }

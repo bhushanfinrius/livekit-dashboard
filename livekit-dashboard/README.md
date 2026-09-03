@@ -36,14 +36,14 @@ Recreate the affected containers after any change, since keys are read at startu
 docker compose up -d --force-recreate livekit sip egress
 ```
 
-VPS upgrade (same machine, keep projects):
+VPS (one command, same machine, keep projects):
 
 ```bash
-git pull
-cd livekit-dashboard
-npm install
-npm run docker:vps:up          # keys + stack + reassign + agent
-# or: npm run docker:vps:up:agent
+# Dashboard only
+cd ~/livekit-dashboard/livekit-dashboard && npm run vps:install
+
+# Dashboard + agent worker
+cd ~/livekit-dashboard/livekit-dashboard && npm run vps:install:agent
 ```
 
 | Guide | Purpose |

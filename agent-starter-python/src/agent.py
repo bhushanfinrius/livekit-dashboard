@@ -83,13 +83,35 @@ SKIP_BACKEND_WEBHOOKS = _env_flag("SKIP_BACKEND_WEBHOOKS")
 DECK_TRANSCRIPT_URL   = os.getenv("DECK_TRANSCRIPT_URL", "").strip()
 DECK_TRANSCRIPT_SECRET = os.getenv("DECK_TRANSCRIPT_SECRET", "").strip()
 GOOGLE_API_KEY        = os.getenv("GOOGLE_API_KEY",        "")
-GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007").strip() or "solvox-ai-007"
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1").strip() or "us-central1"
-# One SA JSON for Vertex Live and GCS recordings. Do not use solvoxai.json.
+# One SA JSON for Vertex Live and GCS recordings. Project comes from this file.
 GOOGLE_SERVICE_ACCOUNT_JSON = (
     os.getenv("GCS_SERVICE_ACCOUNT_JSON") or "livekit-storage.json"
 ).strip() or "livekit-storage.json"
 GCS_SERVICE_ACCOUNT_JSON = GOOGLE_SERVICE_ACCOUNT_JSON
+
+
+def _project_id_from_sa_json(path: str) -> str:
+    raw = (path or "").strip()
+    if not raw:
+        return ""
+    try:
+        if raw.startswith("{"):
+            payload = raw
+        else:
+            with open(raw, encoding="utf-8") as fh:
+                payload = fh.read()
+        return str(json.loads(payload).get("project_id") or "").strip()
+    except Exception:
+        return ""
+
+
+_SA_PROJECT = _project_id_from_sa_json(GOOGLE_SERVICE_ACCOUNT_JSON)
+GOOGLE_CLOUD_PROJECT = (
+    _SA_PROJECT
+    or os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+    or "project-ed86b9c7-57a3-441d-8f9"
+)
 GEMINI_LIVE_VERTEX_MODEL = "gemini-live-2.5-flash-native-audio"
 _REALTIME_VOICE_INSTRUCTIONS = """
 Speak only in natural Indian English accent.
@@ -101,7 +123,7 @@ Use Hinglish naturally when the user speaks Hindi.
 
 
 def _prepare_vertex_env() -> None:
-    """Vertex Live only. Force livekit-storage.json; strip AIza keys so Live stays on solvox-ai-007."""
+    """Vertex Live only. Use the project inside livekit-storage.json; strip AIza keys."""
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
     os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
     os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION

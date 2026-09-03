@@ -174,6 +174,7 @@ def test_vertex_live_strips_gemini_api_keys(monkeypatch) -> None:
     assert os.getenv("GOOGLE_GENAI_USE_VERTEXAI") == "true"
     assert os.getenv("GOOGLE_CLOUD_PROJECT") == GOOGLE_CLOUD_PROJECT
     assert os.getenv("GOOGLE_CLOUD_LOCATION") == GOOGLE_CLOUD_LOCATION
+    assert GOOGLE_CLOUD_PROJECT  # taken from livekit-storage.json when present
     assert GOOGLE_SERVICE_ACCOUNT_JSON == "livekit-storage.json"
     assert os.getenv("GOOGLE_APPLICATION_CREDENTIALS") == "livekit-storage.json"
     assert os.getenv("GCS_SERVICE_ACCOUNT_JSON") == "livekit-storage.json"

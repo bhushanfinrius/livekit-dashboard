@@ -15,6 +15,9 @@ from agent import (  # noqa: E402
     history_lines_from_report,
     looks_like_busy_callback,
     looks_like_continue_invite,
+    looks_like_farewell,
+    looks_like_garbled_stt,
+    looks_like_no_help_needed,
     looks_like_not_interested,
     should_end_as_no_answer,
 )
@@ -118,11 +121,58 @@ def test_allows_busy_callback() -> None:
 
 def test_allows_after_minimum_conversation() -> None:
     state = FakeState(
+        transcript_parts=[
+            *(f"Turn {index}" for index in range(END_CALL_MIN_TURNS - 1)),
+            "Prospect: Okay bye, thanks.",
+        ],
+        conv_seconds=int(END_CALL_MIN_CONV_SECONDS) + 10,
+    )
+    allowed, reason = end_call_allowed(state)
+    assert allowed is True
+    assert "farewell" in reason.lower()
+
+
+def test_blocks_garbled_and_no_help() -> None:
+    assert looks_like_garbled_stt("{} X {}")
+    assert looks_like_garbled_stt("{ }")
+    assert looks_like_no_help_needed("no need of help")
+    assert looks_like_continue_invite("yeah yeah")
+    assert looks_like_farewell("okay bye")
+    long = FakeState(
+        transcript_parts=[
+            "Aarya: Hello.",
+            "Prospect: Hello.",
+            "Aarya: Calling about CyberX.",
+            "Prospect: Yeah yeah.",
+            "Aarya: Please complete payment.",
+            "Prospect: {} X {}",
+        ],
+        conv_seconds=int(END_CALL_MIN_CONV_SECONDS) + 20,
+    )
+    allowed, reason = end_call_allowed(long)
+    assert allowed is False
+    assert "stt" in reason.lower() or "noise" in reason.lower()
+
+    help_state = FakeState(
+        transcript_parts=[
+            "Aarya: Do you need any help with the payment?",
+            "Prospect: No need of help.",
+        ],
+        conv_seconds=int(END_CALL_MIN_CONV_SECONDS) + 20,
+    )
+    allowed, reason = end_call_allowed(help_state)
+    assert allowed is False
+    assert "help" in reason.lower()
+
+
+def test_blocks_min_conversation_without_goodbye() -> None:
+    state = FakeState(
         transcript_parts=[f"Turn {index}" for index in range(END_CALL_MIN_TURNS)],
         conv_seconds=int(END_CALL_MIN_CONV_SECONDS) + 10,
     )
-    allowed, _reason = end_call_allowed(state)
-    assert allowed is True
+    allowed, reason = end_call_allowed(state)
+    assert allowed is False
+    assert "goodbye" in reason.lower() or "decline" in reason.lower()
 
 
 def test_later_alone_is_not_busy_callback() -> None:

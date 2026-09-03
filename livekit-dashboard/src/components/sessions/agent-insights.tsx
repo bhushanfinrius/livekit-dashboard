@@ -62,7 +62,7 @@ export function AgentInsights({
         transcripts.length === 0 ? (
           <EmptyState
             title="No transcript stored for this session"
-            description="The agent posts conversation lines to LumiVoice while the call is live. Self-hosted LiveKit does not send Cloud agent-observability transcripts."
+            description="The agent posts lines to LumiVoice during the call and again when the room closes. Refresh this session. If it stays empty, DECK_TRANSCRIPT_URL and DECK_TRANSCRIPT_SECRET on the agent must match this project."
           />
         ) : (
           <ol className="space-y-2">

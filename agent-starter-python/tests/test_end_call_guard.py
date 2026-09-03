@@ -143,7 +143,7 @@ def test_history_lines_from_session_report() -> None:
         {
             "chat_history": {
                 "items": [
-                    {"role": "assistant", "content": "Namaste, main Kinjal bol rahi hoon."},
+                    {"role": "assistant", "content": "Namaste, main Aarya bol rahi hoon."},
                     {"role": "user", "content": "Haan, boliye."},
                     {"role": "system", "content": "ignored"},
                 ]
@@ -151,7 +151,7 @@ def test_history_lines_from_session_report() -> None:
         }
     )
     assert lines == [
-        ("agent", "Kinjal (Lumiverse)", "Namaste, main Kinjal bol rahi hoon."),
+        ("agent", "Aarya", "Namaste, main Aarya bol rahi hoon."),
         ("user", "Prospect", "Haan, boliye."),
     ]
 

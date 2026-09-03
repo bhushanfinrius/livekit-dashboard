@@ -207,7 +207,12 @@ _CONTINUE_INVITE_RE = re.compile(
     r"continue|"
     r"और\s*बत(?:ाइए|ाओ)|"
     r"sun(?:o|iye)|"
-    r"^\s*ह(?:ां|ाँ|aan)\s*[\.\!]?\s*$)"
+    r"^\s*ह(?:ां|ाँ|aan)\s*[\.\!]?\s*$|"
+    r"yeah\s*yeah|"
+    r"haan\s*haan|"
+    r"no\s+need\s+(of\s+)?help|"
+    r"don'?t\s+need\s+(any\s+)?help|"
+    r"help\s+nahi\s+chahiye)"
 )
 _NOT_INTERESTED_RE = re.compile(
     r"(?i)(not\s+interested|don't\s+call|do\s+not\s+call|stop\s+calling|"
@@ -228,6 +233,19 @@ _BUSY_CALLBACK_RE = re.compile(
     r"phir\s+(se\s+)?call|"
     r"बाद\s*में\s*(call|फोन|phone)"
     r")"
+)
+_FAREWELL_RE = re.compile(
+    r"(?i)(\bbye\b|\bgoodbye\b|good\s+night|hang\s+up|"
+    r"cut\s+(the\s+)?call|that's\s+all|thats\s+all|"
+    r"bye\s+bye|ok\s+bye|okay\s+bye|alvida|"
+    r"thank\s+you(?:\s+(so\s+much|ji))?[\.\!]?$|"
+    r"^\s*thanks[\.\!]?\s*$|"
+    r"dhanyavaad|धन्यवाद)"
+)
+_NO_HELP_NEEDED_RE = re.compile(
+    r"(?i)(no\s+need\s+(of\s+)?help|don'?t\s+need\s+(any\s+)?help|"
+    r"no\s+help\s+(needed|required)|help\s+nahi\s+chahiye|"
+    r"i\s+(do\s+not|don'?t)\s+need\s+help)"
 )
 
 GCS_BUCKET_NAME          = os.getenv("GCS_BUCKET_NAME", "my_livekit_ecordings")
@@ -328,7 +346,7 @@ async def post_deck_transcript(room_name: str, speaker: str, identity: str, text
                     resp.text[:200],
                 )
             else:
-                logger.debug("[deck-transcript] stored %s/%s", room_name, speaker)
+                logger.info("[deck-transcript] stored %s/%s", room_name, speaker)
     except Exception as exc:
         logger.warning("[deck-transcript] POST %s failed: %s", DECK_TRANSCRIPT_URL, exc)
 
@@ -1978,6 +1996,10 @@ VOICE_RULES = """
 - If referring to the website, guide the customer to the Cyber Ambassador
   website and the Events section instead of spelling out the URL.
 - Never sound like you are reading a script.
+- Speak only in a natural Indian English accent (Mumbai or Pune).
+- Never use an American or British accent.
+- Use Indian pronunciation, Indian rhythm, and Indian conversational style.
+- Sound like a professional Indian female caller. Use Hinglish only when the customer speaks Hindi.
 """
 
 LANGUAGE_RULES = """
@@ -2261,12 +2283,40 @@ def looks_like_busy_callback(text: str) -> bool:
     return bool(_BUSY_CALLBACK_RE.search(cleaned))
 
 
+def looks_like_garbled_stt(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return True
+    letters = re.sub(r"[^A-Za-z\u0900-\u097F]+", "", cleaned)
+    if len(letters) < 2:
+        return True
+    return bool(re.fullmatch(r"[\s\{\}\[\]\(\)<>|/\\xX.,;:!?\-*_]+", cleaned))
+
+
+def looks_like_no_help_needed(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    return bool(_NO_HELP_NEEDED_RE.search(cleaned))
+
+
+def looks_like_farewell(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    return bool(_FAREWELL_RE.search(cleaned))
+
+
 def end_call_allowed(state: CallState) -> tuple[bool, str]:
     """Return (allowed, reason). Blocks premature Gemini end_call on go-ahead phrases."""
     if state.callee_hung_up or state.amd_voicemail:
         return True, "system hangup"
 
     last = _last_prospect_utterance(state)
+    if last and looks_like_garbled_stt(last):
+        return False, f"last utterance looks like STT noise ({last[:80]})"
+    if last and looks_like_no_help_needed(last):
+        return False, f"prospect does not need help — continue ({last[:80]})"
     if last and looks_like_continue_invite(last):
         return False, f"prospect asked you to continue ({last[:80]})"
 
@@ -2289,8 +2339,10 @@ def end_call_allowed(state: CallState) -> tuple[bool, str]:
             f"only {turns} transcript turns "
             f"(minimum {END_CALL_MIN_TURNS} before end_call)"
         )
+    if last and looks_like_farewell(last):
+        return True, "prospect farewell"
 
-    return True, "minimum conversation reached"
+    return False, "no clear goodbye or decline yet — keep talking"
 
 
 async def _close_agent_session(state: CallState) -> None:
@@ -2323,10 +2375,10 @@ class LumiverseSalesAgent(Agent):
     @function_tool(
         name="end_call",
         description=(
-            "Hang up after you have spoken a closing goodbye: details confirmed, "
-            "not interested, busy, or call-back requested. "
-            "Speak the goodbye first, then call this tool immediately. "
-            "NEVER use when they say go ahead, जी बोलिए, hello, haan boliye, or tell me."
+            "Hang up only after a spoken closing goodbye AND the customer clearly "
+            "said goodbye, declined to participate, or asked for a callback. "
+            "Never hang up on Hello, yeah yeah, no need of help, garbled audio, "
+            "go ahead, जी बोलिए, haan boliye, or tell me."
         ),
     )
     async def end_call(self, ctx: RunContext):
@@ -2393,6 +2445,27 @@ GREETING_MAX_ATTEMPTS = int(os.getenv("GREETING_MAX_ATTEMPTS", "3"))
 GREETING_PLAYOUT_TIMEOUT = float(os.getenv("GREETING_PLAYOUT_TIMEOUT", "20"))
 
 
+async def _wait_for_speech_handle(handle, timeout: float) -> None:
+    if handle is None:
+        return
+    wait = getattr(handle, "wait_for_playout", None)
+    if callable(wait):
+        await asyncio.wait_for(wait(), timeout=timeout)
+        return
+    if asyncio.iscoroutine(handle):
+        await asyncio.wait_for(handle, timeout=timeout)
+
+
+async def _speak_opening_hello(session: AgentSession) -> None:
+    """Speak Hello without generate_reply — that races Gemini Live and times out."""
+    say = getattr(session, "say", None)
+    if callable(say):
+        await _wait_for_speech_handle(say("Hello"), GREETING_PLAYOUT_TIMEOUT)
+        return
+    handle = session.generate_reply(instructions=_GREETING_INSTRUCTION)
+    await _wait_for_speech_handle(handle, GREETING_PLAYOUT_TIMEOUT)
+
+
 async def _greet_prospect(session: AgentSession, state: CallState) -> None:
     async with state._greeting_lock:
         if state._greeting_sent:
@@ -2401,13 +2474,9 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
         logger.info(f"[{state.room_name}] Greeting prospect...")
         for attempt in range(1, GREETING_MAX_ATTEMPTS + 1):
             try:
-                delay = 1.0 if attempt == 1 else min(2.0 * attempt, 6.0)
+                delay = 2.0 if attempt == 1 else min(2.0 * attempt, 6.0)
                 await asyncio.sleep(delay)
-                handle = session.generate_reply(instructions=_GREETING_INSTRUCTION)
-                await asyncio.wait_for(
-                    handle.wait_for_playout(),
-                    timeout=GREETING_PLAYOUT_TIMEOUT,
-                )
+                await _speak_opening_hello(session)
                 state._greeting_sent = True
                 logger.info(f"[{state.room_name}] Greeting completed (attempt {attempt})")
                 return
@@ -2417,10 +2486,13 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
                     f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}) — Gemini may still be warming up"
                 )
             except Exception as e:
+                err = str(e).lower()
                 logger.warning(
                     f"[{state.room_name}] Greeting failed "
                     f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}): {e}"
                 )
+                if "generation_created" in err or "timed out" in err:
+                    await asyncio.sleep(1.5 * attempt)
 
         logger.error(
             f"[{state.room_name}] Greeting failed after {GREETING_MAX_ATTEMPTS} attempts — call continues"

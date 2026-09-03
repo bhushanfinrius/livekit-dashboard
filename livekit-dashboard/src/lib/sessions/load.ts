@@ -232,13 +232,24 @@ export async function loadSessionDetail(
   const now = Date.now();
   const started = new Date(Date.parse(session.startedAt) - 1000);
   const ended = new Date((session.endedAt ? Date.parse(session.endedAt) : now) + 1000);
+  // Session-report dumps land a few seconds after hangup; keep a wider window for those rows.
+  const transcriptEnded = new Date(ended.getTime() + 5 * 60_000);
   const rows = await prisma.webhookEvent.findMany({
     where: {
       projectId,
-      createdAt: { gte: started, lte: ended },
       OR: [
-        { roomName: session.roomName },
-        { eventType: { in: ["egress_started", "egress_updated", "egress_ended"] } },
+        {
+          roomName: session.roomName,
+          eventType: "transcription",
+          createdAt: { gte: started, lte: transcriptEnded },
+        },
+        {
+          createdAt: { gte: started, lte: ended },
+          OR: [
+            { roomName: session.roomName },
+            { eventType: { in: ["egress_started", "egress_updated", "egress_ended"] } },
+          ],
+        },
       ],
     },
     orderBy: { createdAt: "desc" },
@@ -280,9 +291,12 @@ export async function loadSessionDetail(
   const recordings = await Promise.all(
     merged.map(async (recording) => {
       try {
+        const signed = (await resolvePlayableUrl(recording.output)) ?? recording.playableUrl;
         return {
           ...recording,
-          playableUrl: (await resolvePlayableUrl(recording.output)) ?? recording.playableUrl,
+          playableUrl: signed
+            ? `/api/projects/${projectId}/recordings/stream?u=${encodeURIComponent(signed)}`
+            : null,
         };
       } catch {
         return recording;

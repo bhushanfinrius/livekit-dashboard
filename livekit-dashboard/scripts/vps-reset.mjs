@@ -155,7 +155,7 @@ function patchAgentEnv(keepId, deckEnv, keys) {
     DECK_TRANSCRIPT_SECRET: transcriptSecret,
     SKIP_CREDIT_CHECK: "1",
     GOOGLE_CLOUD_LOCATION: "us-central1",
-    AGENT_NAME: deckEnv.AGENT_NAME?.trim() || "mahindra_scraping",
+    AGENT_NAME: deckEnv.AGENT_NAME?.trim() || "CTF-Agent",
   });
 
   console.log(`\n→ Patched ${envLocal}`);
@@ -254,7 +254,7 @@ async function runFix(opts) {
   fixProjects(keepId, keys, publicLivekit);
   patchAgentEnv(keepId, deckEnv, keys);
   restartStack();
-  redeployAgent(opts.agentName || "mahindra_scraping", opts.entrypoint || "src/agent.py");
+  redeployAgent(opts.agentName || "CTF-Agent", opts.entrypoint || "src/agent.py");
   printSummary(keepId, deckEnv);
 }
 
@@ -296,7 +296,7 @@ Options:
   --hard                Wipe postgres volume
   --yes                 Skip confirmation
   --keep-project ID     Project to keep (default: most webhook events)
-  --agent-name NAME     Default: mahindra_scraping
+  --agent-name NAME     Default: CTF-Agent
   --entrypoint PATH     Default: src/agent.py
   --help
 `);

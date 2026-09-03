@@ -70,7 +70,7 @@ describe("mergeAgentRuntimeEnv", () => {
       starterEnv: { AGENT_NAME: "old", LIVEKIT_URL: "ws://ignored" },
       livekitApiKey: "deckkey",
       livekitApiSecret: "decksecret",
-      agentName: "mahindra_scraping",
+      agentName: "CTF-Agent",
       entrypoint: "src/agant.py",
       backendBaseUrl: "https://uat-api.solvox.ai",
       backendWebhookUrl: "https://uat-api.solvox.ai/api/webhook/call-event",
@@ -78,7 +78,7 @@ describe("mergeAgentRuntimeEnv", () => {
       deckTranscriptUrl: "http://host.docker.internal:3000/api/projects/p1/sessions/transcripts",
       deckTranscriptSecret: "secret",
     });
-    expect(merged.AGENT_NAME).toBe("mahindra_scraping");
+    expect(merged.AGENT_NAME).toBe("CTF-Agent");
     expect(merged.AGENT_ENTRYPOINT).toBe("src/agant.py");
     expect(merged.BACKEND_BASE_URL).toBe("https://uat-api.solvox.ai");
     expect(merged.SKIP_CREDIT_CHECK).toBe("1");
@@ -136,7 +136,7 @@ describe("parseAgentHealth", () => {
   it("marks a registered worker when logs include AW_ id", () => {
     const parsed = parseAgentHealth({
       status: "running",
-      logs: '{"level": "INFO", "agent_name": "mahindra_scraping", "id": "AW_dqrErQiMPDbu"} registered worker',
+      logs: '{"level": "INFO", "agent_name": "CTF-Agent", "id": "AW_dqrErQiMPDbu"} registered worker',
     });
     expect(parsed.health).toBe("registered");
     expect(parsed.workerId).toBe("AW_dqrErQiMPDbu");
@@ -146,7 +146,7 @@ describe("parseAgentHealth", () => {
     const parsed = parseAgentHealth({
       status: "running",
       logs: [
-        'livekit-dashboard-agent-1  | {"message": "registered worker", "agent_name": "mahindra_scraping", "id": "AW_abc123"}',
+        'livekit-dashboard-agent-1  | {"message": "registered worker", "agent_name": "CTF-Agent", "id": "AW_abc123"}',
         'agent-1 | {"message": "failed to send session event\\nTraceback (most recent call last)"}',
       ].join("\n"),
     });

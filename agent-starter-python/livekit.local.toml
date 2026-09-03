@@ -2,7 +2,7 @@
 # Do not put LIVEKIT_API_SECRET here — Deck injects it at runtime.
 
 [agent]
-name = "my-agent"
+name = "CTF-Agent"
 
 [models]
 # livekit-inference requires LiveKit Cloud. google uses GOOGLE_API_KEY.

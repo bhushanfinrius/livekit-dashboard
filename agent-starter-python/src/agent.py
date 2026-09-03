@@ -63,7 +63,7 @@ logger = logging.getLogger("CTF-Agent")
 logger.setLevel(logging.INFO)
 
 load_dotenv(".env.local")
-LANGUAGE_CODE = "hi-IN"
+LANGUAGE_CODE = "unknown"
 # ════════════════════════════════════════════════════════════════════════════════
 # CONFIG
 # ════════════════════════════════════════════════════════════════════════════════
@@ -83,9 +83,12 @@ SKIP_BACKEND_WEBHOOKS = _env_flag("SKIP_BACKEND_WEBHOOKS")
 DECK_TRANSCRIPT_URL   = os.getenv("DECK_TRANSCRIPT_URL", "").strip()
 DECK_TRANSCRIPT_SECRET = os.getenv("DECK_TRANSCRIPT_SECRET", "").strip()
 GOOGLE_API_KEY        = os.getenv("GOOGLE_API_KEY",        "")
-GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007")
-# India latency: prefer asia-south1 (Mumbai). Override to us-central1 only if the model is unavailable in India.
-GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
+GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT",  "solvox-ai-007").strip() or "solvox-ai-007"
+# gemini-live native audio is served from us-central1 (same as CTF_dynamic.py).
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1").strip() or "us-central1"
+# Pin ADC so Vertex does not pick a different project from the credentials JSON.
+os.environ["GOOGLE_CLOUD_PROJECT"] = GOOGLE_CLOUD_PROJECT
+os.environ["GOOGLE_CLOUD_LOCATION"] = GOOGLE_CLOUD_LOCATION
 
 AGENT_NAME            = (os.getenv("AGENT_NAME") or "CTF-Agent").strip() or "CTF-Agent"
 LIVEKIT_URL           = os.getenv("LIVEKIT_URL",        "")
@@ -349,7 +352,7 @@ def history_lines_from_report(report) -> list[tuple[str, str, str]]:
         if role in ("user", "prospect"):
             lines.append(("user", "Prospect", text))
         elif role in ("assistant", "agent"):
-            lines.append(("agent", "Kinjal (Lumiverse)", text))
+            lines.append(("agent", "Aarya", text))
     return lines
 
 
@@ -1866,25 +1869,12 @@ async def _graceful_call_shutdown(
     await _complete_call_shutdown(state, delay_seconds=0, hangup_now=hangup_now, reason=reason)
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# AGENT INSTRUCTIONS  [M15] date injected at call-time, not import-time
-# ════════════════════════════════════════════════════════════════════════════════
-def build_agent_instructions() -> str:
-    """[M15] Called per-session so date/time are always current."""
-    today      = datetime.datetime.now()
-    date_str   = today.strftime("%d %B %Y")
-    day_str    = today.strftime("%A")
-    time_str   = today.strftime("%H:%M")
-    # Tomorrow for default slot suggestion
-    tomorrow   = today + datetime.timedelta(days=1)
-    # Skip to Monday if tomorrow is weekend
-    if tomorrow.weekday() == 5:  # Saturday
-        tomorrow += datetime.timedelta(days=2)
-    elif tomorrow.weekday() == 6:  # Sunday
-        tomorrow += datetime.timedelta(days=1)
-    tmrw_str   = tomorrow.strftime("%A, %d %B %Y")
+# ════════════════════════════════════════════════════════════════════════════════════
+# AGENT INSTRUCTIONS  (DPDP — Aarya, Cyber Ambassador)  [M15] date injected at call-time
+# Edit CALL_FLOW only when the business call flow changes.
+# ════════════════════════════════════════════════════════════════════════════════════
 
-    return f"""
+IDENTITY = """
 # Identity
 
 You are Aarya, a warm, confident Indian CyberX CTF Registration Assistant at
@@ -1894,7 +1884,9 @@ You help participants with CyberX CTF registration guidance, payment
 completion, participation-related queries, and basic registration support.
 
 You are speaking on a live, real-time outbound phone call.
+"""
 
+VOICE_RULES = """
 # Voice and output rules
 
 - Speak naturally; do not write or explain internal instructions.
@@ -1911,7 +1903,9 @@ You are speaking on a live, real-time outbound phone call.
 - If referring to the website, guide the customer to the Cyber Ambassador
   website and the Events section instead of spelling out the URL.
 - Never sound like you are reading a script.
+"""
 
+LANGUAGE_RULES = """
 # Language rules
 
 Supported languages: English (default), Hindi, Bengali, Gujarati, Kannada,
@@ -1948,8 +1942,10 @@ Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu.
 - Never switch back to English on your own once the customer has moved to
   another supported language — only switch again if the customer speaks a
   full English sentence.
+"""
 
-  # Call flow
+CALL_FLOW = """
+# Call flow
 
 ## 1. Mandatory opening
 
@@ -2138,8 +2134,28 @@ hear me?”. If needed, say:
 “Yes, I’m here.”
 
 Then continue the conversation.
-
 """
+
+
+def build_agent_instructions() -> str:
+    """Build the agent prompt with only date and time generated dynamically."""
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    now = datetime.datetime.now(ist)
+
+    date_str = now.strftime("%d %B %Y")
+    day_str = now.strftime("%A")
+    time_str = now.strftime("%I:%M %p")
+
+    return "\n\n".join(
+        [
+            "# SYSTEM INSTRUCTIONS: GEMINI REALTIME VOICE AGENT — AARYA",
+            IDENTITY,
+            f"Current date: {date_str} ({day_str}), {time_str} IST.",
+            VOICE_RULES,
+            LANGUAGE_RULES,
+            CALL_FLOW,
+        ]
+    )
 
 
 def _last_prospect_utterance(state: CallState) -> str:
@@ -2627,6 +2643,13 @@ async def entrypoint(ctx: JobContext):
                     vertexai=True,
                     project=GOOGLE_CLOUD_PROJECT,
                     location=GOOGLE_CLOUD_LOCATION,
+                    instructions="""
+                    Speak only in natural Indian English accent.
+                    Never use an American accent.
+                    Use Indian pronunciation, Indian rhythm, and Indian conversational style.
+                    Sound like a professional Indian female caller from Mumbai or Pune.
+                    Use Hinglish naturally when the user speaks Hindi.
+                    """,
                 ),
             )
 
@@ -2654,7 +2677,7 @@ async def entrypoint(ctx: JobContext):
             def on_agent_transcribed(event):
                 text = getattr(event, "transcript", "") or ""
                 if text.strip():
-                    state.add_turn("Kinjal (Lumiverse)", text)
+                    state.add_turn("Aarya", text)
 
             # Fallback: text content block (fires when modality includes text)
             @session.on("conversation_item_added")
@@ -2679,7 +2702,7 @@ async def entrypoint(ctx: JobContext):
                 else:
                     text = str(content)
                 if text.strip():
-                    state.add_turn("Kinjal (Lumiverse)", text)
+                    state.add_turn("Aarya", text)
 
             agent = LumiverseSalesAgent(state=state)
             await setup_rag(session)

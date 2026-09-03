@@ -36,7 +36,15 @@ Recreate the affected containers after any change, since keys are read at startu
 docker compose up -d --force-recreate livekit sip egress
 ```
 
-Upgrading an install that used the old committed key pair: run `npm run livekit:keys`, recreate `livekit`, `sip` and `egress`, then `npm run livekit:keys -- --reassign` to move existing projects onto pool pairs and re-sync the deployed agent worker.
+VPS upgrade (same machine, keep projects):
+
+```bash
+git pull
+cd livekit-dashboard
+npm install
+npm run docker:vps:up          # keys + stack + reassign + agent
+# or: npm run docker:vps:up:agent
+```
 
 | Guide | Purpose |
 |-------|---------|

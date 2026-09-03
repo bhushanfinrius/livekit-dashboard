@@ -1,6 +1,8 @@
+# Generated into sip.yaml by: npm run livekit:keys
+# Uses the infra key pair only; project keys are never given to the SIP service.
 log_level: info
-api_key: deck_bcce7fdea121fc22
-api_secret: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
+api_key: __LIVEKIT_INFRA_API_KEY__
+api_secret: "__LIVEKIT_INFRA_API_SECRET__"
 ws_url: ws://livekit:7880
 redis:
   address: redis:6379

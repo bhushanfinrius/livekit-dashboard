@@ -1,3 +1,5 @@
+# Generated into livekit.yaml by: npm run livekit:keys
+# Secrets come from config/livekit.keys.json (gitignored). Do not put keys in this file.
 port: 7880
 rtc:
   tcp_port: 7881
@@ -21,12 +23,14 @@ turn:
 redis:
   address: redis:6379
 
+# One infra pair (used by sip/egress/webhook) plus a pool assigned one-per-project.
+# LiveKit reads keys only at startup, so recreate the container after changing these.
 keys:
-  # LiveKit 1.13+ requires API secrets >= 32 characters
-  deck_bcce7fdea121fc22: "787b881a7f66e8f22ccee99d20b3b38a39921b9de66e901f00c2d25af5c8fafb"
+__LIVEKIT_KEYS__
 
 webhook:
-  api_key: deck_bcce7fdea121fc22
+  # The infra pair signs webhooks. LumiVoice attributes events to a project by room.
+  api_key: __LIVEKIT_INFRA_API_KEY__
   urls:
     # Host LumiVoice (`npm run dev`) and Compose UI (`docker compose up deck`).
     # Recreate the livekit container after changing these URLs.

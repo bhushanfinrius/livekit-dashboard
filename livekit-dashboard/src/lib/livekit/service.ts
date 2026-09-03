@@ -34,7 +34,10 @@ import {
   isEncryptedSecret,
 } from "@/lib/crypto/secret";
 import { ProjectAccessError } from "@/lib/livekit/errors";
-import { readLocalLiveKitKeys } from "@/lib/livekit/apply-local-keys";
+import {
+  type LiveKitKeyPair,
+  readLocalLiveKitKeyPool,
+} from "@/lib/livekit/apply-local-keys";
 import { isLocalLiveKitUrl } from "@/lib/livekit/local-defaults";
 import { syncAgentWorkerKeys } from "@/lib/livekit/agent-worker";
 import { clientLivekitWsUrl, serverLivekitUrl, toHttpLivekitUrl, toWsLivekitUrl } from "@/lib/livekit/url";
@@ -378,25 +381,72 @@ export async function getProjectLiveKit(
   return livekit;
 }
 
+/**
+ * Claim an unused pair from the local LiveKit key pool. LiveKit only reads keys at
+ * startup, so the pool is generated up front and project creation just takes one.
+ */
+export async function assignProjectKeyPair(): Promise<LiveKitKeyPair> {
+  const { pool } = readLocalLiveKitKeyPool();
+  if (pool.length === 0) {
+    throw new Error(
+      "No LiveKit key pool found. Run `npm run livekit:keys`, then recreate the livekit container.",
+    );
+  }
+
+  // Both the primary pair on each project and every extra key a project has issued.
+  const [primaries, issued] = await Promise.all([
+    prisma.project.findMany({ select: { livekitApiKey: true } }),
+    prisma.projectApiKey.findMany({ select: { apiKey: true } }),
+  ]);
+  const taken = new Set([
+    ...primaries.map((row) => row.livekitApiKey),
+    ...issued.map((row) => row.apiKey),
+  ]);
+
+  const free = pool.find((pair) => !taken.has(pair.apiKey));
+  if (!free) {
+    throw new Error(
+      `All ${pool.length} LiveKit key pairs are assigned. Run \`npm run livekit:keys -- --pool-add 10\` and recreate the livekit container.`,
+    );
+  }
+  return free;
+}
+
+/**
+ * Webhooks are signed with the infra pair (livekit.yaml `webhook.api_key`), not with any
+ * project's key, so verification has to happen outside the per-project clients.
+ */
+export function infraWebhookReceiver() {
+  const { infra } = readLocalLiveKitKeyPool();
+  if (!infra) return null;
+  return new WebhookReceiver(infra.apiKey, infra.apiSecret);
+}
+
 export async function getProjectLiveKitForWebhook(projectId: string) {
   let project = await loadDecryptedProject(projectId);
   if (!project) return null;
 
+  // Self-heal only when the pool was regenerated and this project's key no longer exists.
+  // Anything still in the pool is a valid per-project key and must be left alone.
   if (isLocalLiveKitUrl(project.livekitUrl)) {
-    const yamlKeys = readLocalLiveKitKeys();
-    if (
-      project.livekitApiKey !== yamlKeys.apiKey ||
-      project.livekitApiSecret !== yamlKeys.apiSecret
-    ) {
+    const currentApiKey = project.livekitApiKey;
+    const { infra, pool } = readLocalLiveKitKeyPool();
+    const stale =
+      pool.length > 0 &&
+      !pool.some((pair) => pair.apiKey === currentApiKey) &&
+      currentApiKey !== infra?.apiKey;
+
+    if (stale) {
+      const pair = await assignProjectKeyPair();
       await prisma.project.update({
         where: { id: projectId },
         data: {
-          livekitApiKey: yamlKeys.apiKey,
-          livekitApiSecret: encryptLiveKitSecret(yamlKeys.apiSecret),
+          livekitApiKey: pair.apiKey,
+          livekitApiSecret: encryptLiveKitSecret(pair.apiSecret),
         },
       });
       try {
-        syncAgentWorkerKeys(yamlKeys.apiKey, yamlKeys.apiSecret);
+        syncAgentWorkerKeys(pair.apiKey, pair.apiSecret);
       } catch {
         // Agent worker may not be deployed yet.
       }

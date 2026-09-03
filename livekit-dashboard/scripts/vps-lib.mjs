@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { loadKeyStore, substituteKeys } from "./keys-lib.mjs";
 
 export const VPS_COMPOSE_FILES = [
   "-f",
@@ -107,7 +108,14 @@ export function renderLivekitRuntimeConfig(dashboardRoot, publicIp) {
   if (!ip || ip.includes("REPLACE") || ip.includes("YOUR_")) {
     throw new Error("Set LIVEKIT_PUBLIC_IP in .env (your VPS public IP or hostname).");
   }
-  const rendered = readFileSync(templatePath, "utf8").replaceAll("__LIVEKIT_PUBLIC_IP__", ip);
+  const store = loadKeyStore(dashboardRoot);
+  if (!store) {
+    throw new Error("No LiveKit keys yet. Run: npm run livekit:keys");
+  }
+  const rendered = substituteKeys(
+    readFileSync(templatePath, "utf8").replaceAll("__LIVEKIT_PUBLIC_IP__", ip),
+    store,
+  );
   writeFileSync(outPath, rendered, "utf8");
   return outPath;
 }

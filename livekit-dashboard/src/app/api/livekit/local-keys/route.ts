@@ -14,8 +14,12 @@ export async function GET() {
 
   try {
     return jsonOk(readLocalLiveKitKeys());
-  } catch {
-    return jsonError("Could not read livekit.yaml", 500, "CONFIG");
+  } catch (error) {
+    return jsonError(
+      error instanceof Error ? error.message : "Could not read livekit.yaml",
+      500,
+      "CONFIG",
+    );
   }
 }
 
@@ -25,16 +29,16 @@ export async function POST(request: Request) {
     return jsonError("Unauthorized", 401, "UNAUTHORIZED");
   }
 
-  let mode: "generate" | "defaults" = "generate";
+  let replaces: string | undefined;
   try {
-    const body = (await request.json()) as { mode?: string };
-    if (body.mode === "defaults") mode = "defaults";
+    const body = (await request.json()) as { replacesApiKey?: string };
+    replaces = body.replacesApiKey?.trim() || undefined;
   } catch {
-    mode = "generate";
+    replaces = undefined;
   }
 
   try {
-    const keys = await applyLocalLiveKitKeys(mode);
+    const keys = await applyLocalLiveKitKeys(replaces);
     return jsonOk({
       ...keys,
       applied: true,

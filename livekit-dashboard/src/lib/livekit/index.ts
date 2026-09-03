@@ -27,10 +27,12 @@ export {
   toWsLivekitUrl,
 } from "@/lib/livekit/url";
 export {
+  assignProjectKeyPair,
   encryptLiveKitSecret,
   findProjectIdsByApiKey,
   getProjectLiveKit,
   getProjectLiveKitForWebhook,
+  infraWebhookReceiver,
   verifyLiveKitCredentials,
   type LiveKitCredentials,
   type ProjectLiveKit,

@@ -1,0 +1,10 @@
+# Generated into egress.yaml by: npm run livekit:keys
+# Uses the infra key pair only; project keys are never given to the egress service.
+log_level: info
+api_key: __LIVEKIT_INFRA_API_KEY__
+api_secret: "__LIVEKIT_INFRA_API_SECRET__"
+ws_url: ws://livekit:7880
+insecure: true
+redis:
+  address: redis:6379
+health_port: 8080

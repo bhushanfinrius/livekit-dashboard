@@ -39,6 +39,8 @@ export const dispatchRuleSchema = z.object({
   pin: z.string().trim().optional(),
   trunkIds: csv.optional(),
   metadata: z.string().max(4096).optional(),
+  /** Recording folder for inbound calls matched by this rule. */
+  agentName: z.string().trim().max(80).optional(),
 });
 
 export const sipDialSchema = z.object({

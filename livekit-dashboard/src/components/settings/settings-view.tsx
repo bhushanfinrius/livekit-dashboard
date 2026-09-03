@@ -20,6 +20,7 @@ export function SettingsView({
   initialUrl,
   initialPublicUrl,
   initialApiKey,
+  sipUri,
   joinCode,
   role,
   initialMembers,
@@ -30,6 +31,7 @@ export function SettingsView({
   initialUrl: string;
   initialPublicUrl: string;
   initialApiKey: string;
+  sipUri: string | null;
   joinCode: string;
   role: string;
   initialMembers: MemberSnapshot[];
@@ -69,6 +71,34 @@ export function SettingsView({
     <div className="max-w-xl space-y-6">
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       {message ? <p className="text-sm text-live">{message}</p> : null}
+
+      <section className="rounded-lg border border-border bg-card p-4">
+        <h2 className="text-sm font-medium">Project identity</h2>
+        <p className="mt-1 mb-4 text-sm text-muted-foreground">
+          What to hand to an SDK, the LiveKit CLI, or a SIP carrier.
+        </p>
+        <div className="space-y-3">
+          <CopyField label="Project ID" value={projectId} />
+          <CopyField
+            label="Project URL"
+            value={clientLivekitWsUrl({ livekitUrl, publicLivekitUrl })}
+          />
+          {sipUri ? (
+            <>
+              <CopyField label="SIP URI" value={sipUri} />
+              <p className="text-xs text-muted-foreground">
+                One SIP service serves every project. Point your carrier at this URI; calls
+                reach this project through the phone numbers on its inbound trunk.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Set <span className="font-mono">SIP_PUBLIC_HOST</span> (or{" "}
+              <span className="font-mono">LIVEKIT_PUBLIC_IP</span>) to show a SIP URI here.
+            </p>
+          )}
+        </div>
+      </section>
 
       <section className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-sm font-medium">Project</h2>

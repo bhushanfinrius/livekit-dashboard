@@ -19,8 +19,11 @@ export function RecordingPlayer({
   onTime: (ms: number) => void;
 }) {
   const playable = recordings.filter((recording) => recording.playableUrl);
-  const [selectedId, setSelectedId] = useState(playable[0]?.id ?? recordings[0]?.id ?? "");
-  const selected = recordings.find((recording) => recording.id === selectedId) ?? playable[0] ?? null;
+  // Mixed has both voices, so it is the sensible default for listening back.
+  const preferred = playable.find((recording) => recording.role === "mixed") ?? playable[0];
+  const [selectedId, setSelectedId] = useState(preferred?.id ?? recordings[0]?.id ?? "");
+  const selected =
+    recordings.find((recording) => recording.id === selectedId) ?? preferred ?? null;
   const mediaRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -32,6 +35,14 @@ export function RecordingPlayer({
   const [waveformError, setWaveformError] = useState<string | null>(null);
 
   const url = selected?.playableUrl ?? null;
+  const preferredId = preferred?.id ?? "";
+
+  // Recordings arrive after mount, so re-apply the mixed default once they land.
+  useEffect(() => {
+    if (preferredId && selectedId !== preferredId && !recordings.some((r) => r.id === selectedId)) {
+      setSelectedId(preferredId);
+    }
+  }, [preferredId, recordings, selectedId]);
 
   useEffect(() => {
     const media = mediaRef.current;
@@ -146,7 +157,8 @@ export function RecordingPlayer({
           >
             {recordings.map((recording) => (
               <option key={recording.id} value={recording.id}>
-                {recording.type} · {recording.status}
+                {recording.label}
+                {recording.playableUrl ? "" : ` · ${recording.status}`}
               </option>
             ))}
           </select>

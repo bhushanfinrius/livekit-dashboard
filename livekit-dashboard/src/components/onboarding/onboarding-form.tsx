@@ -4,12 +4,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CopyField } from "@/components/copy-field";
-import { CreatedKeysDialog } from "@/components/keys/created-keys-dialog";
 import { WebhookUrls } from "@/components/webhooks/webhook-urls";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiJson } from "@/lib/api/client";
-import { LOCAL_LIVEKIT } from "@/lib/livekit/local-defaults";
+import { isLocalLiveKitUrl, LOCAL_LIVEKIT } from "@/lib/livekit/local-defaults";
 
 type CreatedProject = {
   id: string;
@@ -19,61 +18,27 @@ type CreatedProject = {
   livekitApiSecret: string;
 };
 
-type LocalKeys = {
-  url: string;
-  apiKey: string;
-  apiSecret: string;
-  canRotate?: boolean;
-};
+type LocalKeys = { url: string };
 
 export function OnboardingForm() {
   const router = useRouter();
   const [mode, setMode] = useState<"create" | "join">("create");
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [pending, setPending] = useState<"create" | "keys" | "join" | null>(null);
+  const [pending, setPending] = useState<"create" | "join" | null>(null);
   const [created, setCreated] = useState<CreatedProject | null>(null);
   const [livekitUrl, setLivekitUrl] = useState<string>(LOCAL_LIVEKIT.url);
-  const [livekitApiKey, setLivekitApiKey] = useState<string>(LOCAL_LIVEKIT.apiKey);
-  const [livekitApiSecret, setLivekitApiSecret] = useState<string>(LOCAL_LIVEKIT.apiSecret);
-  const [revealKeys, setRevealKeys] = useState(false);
-  const [canRotate, setCanRotate] = useState(false);
+  const [livekitApiKey, setLivekitApiKey] = useState("");
+  const [livekitApiSecret, setLivekitApiSecret] = useState("");
+
+  // The self-hosted server assigns a key pair from its pool; only a remote or Cloud
+  // LiveKit still needs credentials pasted in.
+  const selfHosted = isLocalLiveKitUrl(livekitUrl);
 
   useEffect(() => {
     void apiJson<LocalKeys>("/api/livekit/local-keys")
-      .then((keys) => {
-        setLivekitUrl(keys.url);
-        setLivekitApiKey(keys.apiKey);
-        setLivekitApiSecret(keys.apiSecret);
-        setCanRotate(keys.canRotate === true);
-      })
+      .then((keys) => setLivekitUrl(keys.url))
       .catch(() => {});
   }, []);
-
-  async function applyKeys(nextMode: "generate" | "defaults") {
-    setPending("keys");
-    setError(null);
-    setMessage(null);
-    try {
-      const keys = await apiJson<LocalKeys>("/api/livekit/local-keys", {
-        method: "POST",
-        body: JSON.stringify({ mode: nextMode }),
-      });
-      setLivekitUrl(keys.url);
-      setLivekitApiKey(keys.apiKey);
-      setLivekitApiSecret(keys.apiSecret);
-      setRevealKeys(nextMode === "generate");
-      setMessage(
-        nextMode === "defaults"
-          ? "Restored Docker defaults in livekit.yaml and sip.yaml. LiveKit restarted."
-          : "Wrote a new key pair to livekit.yaml and sip.yaml. LiveKit restarted. Copy the secret from the dialog.",
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not apply keys");
-    } finally {
-      setPending(null);
-    }
-  }
 
   async function createProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -87,8 +52,7 @@ export function OnboardingForm() {
       body: JSON.stringify({
         name: form.get("name"),
         livekitUrl,
-        livekitApiKey,
-        livekitApiSecret,
+        ...(selfHosted ? {} : { livekitApiKey, livekitApiSecret }),
       }),
     });
 
@@ -106,13 +70,7 @@ export function OnboardingForm() {
       return;
     }
 
-    setCreated({
-      id: payload.id,
-      name: payload.name,
-      joinCode: payload.joinCode,
-      livekitApiKey,
-      livekitApiSecret,
-    });
+    setCreated(payload);
     setPending(null);
   }
 
@@ -207,46 +165,6 @@ export function OnboardingForm() {
             <Label htmlFor="name">Project name</Label>
             <Input id="name" name="name" required placeholder="production" defaultValue="demo" />
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">
-              {canRotate ? (
-                <>
-                  Keys are loaded from <span className="font-mono">livekit.yaml</span>. Create
-                  the project with those values. Generate is optional: it rewrites YAML and
-                  restarts local LiveKit (host UI only).
-                </>
-              ) : (
-                <>
-                  Docker already loaded keys from <span className="font-mono">livekit.yaml</span>.
-                  Leave the fields as they are and click Create. Do not type a new key —
-                  LiveKit will reject it until the YAML files and containers are updated on the
-                  host.
-                </>
-              )}
-            </p>
-            {canRotate ? (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={pending !== null}
-                  onClick={() => void applyKeys("defaults")}
-                >
-                  {pending === "keys" ? "Applying…" : "Fill Docker defaults"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={pending !== null}
-                  onClick={() => void applyKeys("generate")}
-                >
-                  {pending === "keys" ? "Applying…" : "Generate key pair"}
-                </Button>
-              </div>
-            ) : null}
-          </div>
           <div className="space-y-2">
             <Label htmlFor="livekitUrl">LiveKit URL</Label>
             <Input
@@ -259,34 +177,43 @@ export function OnboardingForm() {
               className="font-mono"
             />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="livekitApiKey">API key</Label>
-            <Input
-              id="livekitApiKey"
-              name="livekitApiKey"
-              required
-              value={livekitApiKey}
-              onChange={(event) => setLivekitApiKey(event.target.value)}
-              autoComplete="off"
-              className="font-mono"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="livekitApiSecret">API secret</Label>
-            <Input
-              id="livekitApiSecret"
-              name="livekitApiSecret"
-              type="text"
-              required
-              minLength={32}
-              value={livekitApiSecret}
-              onChange={(event) => setLivekitApiSecret(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono"
-            />
-          </div>
-          {message ? <p className="text-sm text-live">{message}</p> : null}
+          {selfHosted ? (
+            <p className="text-xs text-muted-foreground">
+              This project gets its own LiveKit API key, assigned from the pool in{" "}
+              <span className="font-mono">livekit.yaml</span>. You will see the key and
+              secret once, right after creating.
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="livekitApiKey">API key</Label>
+                <Input
+                  id="livekitApiKey"
+                  name="livekitApiKey"
+                  required
+                  value={livekitApiKey}
+                  onChange={(event) => setLivekitApiKey(event.target.value)}
+                  autoComplete="off"
+                  className="font-mono"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="livekitApiSecret">API secret</Label>
+                <Input
+                  id="livekitApiSecret"
+                  name="livekitApiSecret"
+                  type="text"
+                  required
+                  minLength={32}
+                  value={livekitApiSecret}
+                  onChange={(event) => setLivekitApiSecret(event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="font-mono"
+                />
+              </div>
+            </>
+          )}
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
           <Button type="submit" className="w-full" disabled={pending !== null}>
             {pending === "create" ? "Checking LiveKit…" : "Create and connect"}
@@ -310,12 +237,6 @@ export function OnboardingForm() {
           </Button>
         </form>
       )}
-      <CreatedKeysDialog
-        open={revealKeys}
-        apiKey={livekitApiKey}
-        apiSecret={livekitApiSecret}
-        onClose={() => setRevealKeys(false)}
-      />
     </div>
   );
 }

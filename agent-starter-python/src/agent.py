@@ -102,7 +102,7 @@ VOICEMAIL_DETECTION_ENABLED = os.getenv("VOICEMAIL_DETECTION_ENABLED", "true").l
 SIP_JOIN_TIMEOUT            = float(os.getenv("SIP_JOIN_TIMEOUT") or os.getenv("AMD_SIP_JOIN_TIMEOUT") or "20")
 BACKGROUND_AUDIO_ENABLED    = os.getenv("BACKGROUND_AUDIO_ENABLED", "true").lower() in ("1", "true", "yes")
 BACKGROUND_AUDIO_VOLUME     = float(os.getenv("BACKGROUND_AUDIO_VOLUME", "0.8"))
-RECORDING_FINALIZE_TIMEOUT  = float(os.getenv("RECORDING_FINALIZE_TIMEOUT", "90"))
+RECORDING_FINALIZE_TIMEOUT  = float(os.getenv("RECORDING_FINALIZE_TIMEOUT", "120"))
 _VOICEMAIL_AGENT_NOTES      = "Voice mail detected"
 
 MAX_CALL_SECONDS      = int(os.getenv("MAX_CALL_SECONDS", "300"))
@@ -137,13 +137,17 @@ _NOT_INTERESTED_RE = re.compile(
 GCS_SERVICE_ACCOUNT_JSON = os.getenv("GCS_SERVICE_ACCOUNT_JSON", "livekit-storage.json")
 GCS_BUCKET_NAME          = os.getenv("GCS_BUCKET_NAME", "my_livekit_ecordings")
 
-# [M23] Auto track egress — LiveKit records each published audio track to GCS
+# [M23] Declarative egress at CreateRoom (LiveKit Cloud style):
+#   room composite (audio_only) -> one mixed file for playback
+#   auto track egress           -> one file per published track for analysis
+ROOM_COMPOSITE_EGRESS_ENABLED = os.getenv("ROOM_COMPOSITE_EGRESS_ENABLED", "true").lower() in ("1", "true", "yes")
 AUTO_TRACK_EGRESS_ENABLED = os.getenv("AUTO_TRACK_EGRESS_ENABLED", "true").lower() in ("1", "true", "yes")
 AUTO_TRACK_EGRESS_FILEPATH = os.getenv(
     "AUTO_TRACK_EGRESS_FILEPATH",
     f"recordings/{AGENT_NAME}/{{room_name}}/{{publisher_identity}}-{{time}}.ogg",
 )
 RECORDING_FILE_EXT = ".ogg"
+MIXED_RECORDING_SUFFIX = "-mixed"
 _LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-analysis")
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -256,7 +260,7 @@ def _is_sip_callee_participant(participant: rtc.RemoteParticipant) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# EGRESS  [M23] auto track egress at CreateRoom (LiveKit Cloud style)
+# EGRESS  [M23] declarative egress at CreateRoom + verify/fallback (Cloud parity)
 # ════════════════════════════════════════════════════════════════════════════════
 def _load_gcs_creds_json(room_name: str) -> Optional[str]:
     if not os.path.exists(GCS_SERVICE_ACCOUNT_JSON):
@@ -272,47 +276,314 @@ def _auto_track_egress_filepath() -> str:
     return AUTO_TRACK_EGRESS_FILEPATH.replace("{AGENT_NAME}", AGENT_NAME)
 
 
-async def ensure_auto_track_egress_room(room_name: str) -> bool:
-    """Create room with auto track egress before participants join (LiveKit Cloud pattern)."""
-    if not AUTO_TRACK_EGRESS_ENABLED:
-        logger.info(f"[{room_name}] Auto track egress disabled")
+def _mixed_egress_filepath(room_name: Optional[str] = None) -> str:
+    """Template ({room_name}) for declarative egress, literal path when starting manually."""
+    room = room_name or "{room_name}"
+    return f"recordings/{AGENT_NAME}/{room}/{room}{MIXED_RECORDING_SUFFIX}{RECORDING_FILE_EXT}"
+
+
+def _gcp_upload(gcs_creds_json: str):
+    from livekit.protocol import egress as egress_proto
+
+    return egress_proto.GCPUpload(credentials=gcs_creds_json, bucket=GCS_BUCKET_NAME)
+
+
+def build_mixed_egress_request(gcs_creds_json: str, room_name: Optional[str] = None):
+    """Room composite, audio_only. Never set layout/custom_base_url — that forces the
+    job through the Chrome video pipeline and fails on audio-only SIP rooms."""
+    from livekit.protocol import egress as egress_proto
+
+    return egress_proto.RoomCompositeEgressRequest(
+        room_name=room_name or "",
+        audio_only=True,
+        file_outputs=[
+            egress_proto.EncodedFileOutput(
+                filepath=_mixed_egress_filepath(room_name),
+                gcp=_gcp_upload(gcs_creds_json),
+            )
+        ],
+    )
+
+
+def build_auto_track_egress(gcs_creds_json: str):
+    from livekit.protocol import egress as egress_proto
+
+    return egress_proto.AutoTrackEgress(
+        filepath=_auto_track_egress_filepath(),
+        gcp=_gcp_upload(gcs_creds_json),
+    )
+
+
+def build_room_egress(gcs_creds_json: str):
+    """Single source of truth for the RoomEgress attached at room creation."""
+    from livekit.protocol import room as room_proto
+
+    egress = room_proto.RoomEgress()
+    if ROOM_COMPOSITE_EGRESS_ENABLED:
+        egress.room.CopyFrom(build_mixed_egress_request(gcs_creds_json))
+    if AUTO_TRACK_EGRESS_ENABLED:
+        egress.tracks.CopyFrom(build_auto_track_egress(gcs_creds_json))
+    return egress
+
+
+# ── Audio track discovery (used only by the manual fallback path) ──────────────
+def _is_audio_publication(pub) -> bool:
+    kind = getattr(pub, "kind", None)
+    if kind is None:
         return False
+    if hasattr(rtc, "TrackKind") and kind == rtc.TrackKind.KIND_AUDIO:
+        return True
+    name = getattr(kind, "name", None)
+    return name == "KIND_AUDIO" or str(kind).endswith("AUDIO")
+
+
+def _audio_track_sid(publication) -> Optional[str]:
+    sid = getattr(publication, "sid", None)
+    return sid.strip() if isinstance(sid, str) and sid.strip() else None
+
+
+def _find_sip_audio_track_sid(room: rtc.Room) -> Optional[str]:
+    for participant in room.remote_participants.values():
+        if not _is_sip_callee_participant(participant):
+            continue
+        for pub in participant.track_publications.values():
+            if _is_audio_publication(pub):
+                sid = _audio_track_sid(pub)
+                if sid:
+                    return sid
+    return None
+
+
+def _find_local_audio_track_sid(room: rtc.Room) -> Optional[str]:
+    local = room.local_participant
+    if local is None:
+        return None
+    for pub in local.track_publications.values():
+        if _is_audio_publication(pub):
+            sid = _audio_track_sid(pub)
+            if sid:
+                return sid
+    return None
+
+
+async def _wait_for_audio_track_sid(
+    room: rtc.Room,
+    room_name: str,
+    *,
+    prefer_sip: bool,
+    timeout: float = 30.0,
+) -> Optional[str]:
+    if prefer_sip:
+        sid = _find_sip_audio_track_sid(room)
+        if sid:
+            logger.info(f"[{room_name}] SIP audio track ready — {sid}")
+            return sid
+    else:
+        sid = _find_local_audio_track_sid(room)
+        if sid:
+            logger.info(f"[{room_name}] Agent audio track ready — {sid}")
+            return sid
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[str] = loop.create_future()
+
+    @room.on("track_published")
+    def _on_track_published(publication, participant):
+        if fut.done() or not _is_audio_publication(publication):
+            return
+        if prefer_sip:
+            if not isinstance(participant, rtc.RemoteParticipant):
+                return
+            if not _is_sip_callee_participant(participant):
+                return
+        elif participant is not room.local_participant:
+            return
+        track_sid = _audio_track_sid(publication)
+        if track_sid:
+            fut.set_result(track_sid)
+
+    label = "SIP" if prefer_sip else "agent"
+    try:
+        track_sid = await asyncio.wait_for(fut, timeout=timeout)
+        logger.info(f"[{room_name}] {label} audio track published — {track_sid}")
+        return track_sid
+    except asyncio.TimeoutError:
+        logger.warning(f"[{room_name}] Timed out waiting for {label} audio track ({timeout:.0f}s)")
+        return None
+
+
+# ── Manual egress starters (fallback when declarative config never applied) ────
+async def start_mixed_egress(room_name: str, gcs_creds_json: str) -> Optional[str]:
+    try:
+        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        try:
+            result = await lkapi.egress.start_room_composite_egress(
+                build_mixed_egress_request(gcs_creds_json, room_name)
+            )
+        finally:
+            await lkapi.aclose()
+        logger.info(
+            f"[{room_name}] 🎬 Mixed egress started — egress_id={result.egress_id} → "
+            f"gs://{GCS_BUCKET_NAME}/{_mixed_egress_filepath(room_name)}"
+        )
+        return result.egress_id
+    except Exception as e:
+        logger.error(f"[{room_name}] Failed to start mixed egress: {e}")
+        return None
+
+
+async def start_track_egress(
+    room_name: str,
+    track_id: str,
+    identity: str,
+    gcs_creds_json: str,
+) -> Optional[str]:
+    """Track egress writes the raw Opus track without transcoding."""
+    from livekit.protocol import egress as egress_proto
+
+    filepath = f"recordings/{AGENT_NAME}/{room_name}/{identity}-{{time}}{RECORDING_FILE_EXT}"
+    try:
+        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        try:
+            result = await lkapi.egress.start_track_egress(
+                egress_proto.TrackEgressRequest(
+                    room_name=room_name,
+                    track_id=track_id,
+                    file=egress_proto.DirectFileOutput(
+                        filepath=filepath,
+                        gcp=_gcp_upload(gcs_creds_json),
+                    ),
+                )
+            )
+        finally:
+            await lkapi.aclose()
+        logger.info(
+            f"[{room_name}] 🎬 Track egress started — egress_id={result.egress_id} "
+            f"track={track_id} identity={identity}"
+        )
+        return result.egress_id
+    except Exception as e:
+        logger.error(f"[{room_name}] Failed to start track egress ({track_id}): {e}")
+        return None
+
+
+async def _start_manual_egress(room: rtc.Room, state: "CallState", gcs_creds_json: str) -> bool:
+    """Fallback: room already existed without egress config, so start jobs ourselves."""
+    started = False
+
+    if ROOM_COMPOSITE_EGRESS_ENABLED and not state._call_end_handled:
+        if await start_mixed_egress(state.room_name, gcs_creds_json):
+            started = True
+
+    if not AUTO_TRACK_EGRESS_ENABLED:
+        return started
+
+    prefer_sip = not state.is_console
+    primary_sid = await _wait_for_audio_track_sid(
+        room, state.room_name, prefer_sip=prefer_sip, timeout=30.0
+    )
+    if not primary_sid and prefer_sip:
+        primary_sid = await _wait_for_audio_track_sid(
+            room, state.room_name, prefer_sip=False, timeout=10.0
+        )
+    if state._call_end_handled:
+        return started
+
+    seen: set[str] = set()
+    for participant in list(room.remote_participants.values()) + [room.local_participant]:
+        if participant is None:
+            continue
+        identity = getattr(participant, "identity", "") or "participant"
+        for pub in participant.track_publications.values():
+            if not _is_audio_publication(pub):
+                continue
+            sid = _audio_track_sid(pub)
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            if await start_track_egress(state.room_name, sid, identity, gcs_creds_json):
+                started = True
+
+    if not seen:
+        logger.warning(f"[{state.room_name}] ⚠️ No audio tracks found for fallback recording")
+    return started
+
+
+async def _run_recording_fallback(room: rtc.Room, state: "CallState") -> None:
+    """Background task: start egress ourselves when the declarative config never applied."""
+    try:
+        gcs_creds_json = _load_gcs_creds_json(state.room_name)
+        if not gcs_creds_json:
+            state.recording_active = False
+            return
+        started = await _start_manual_egress(room, state, gcs_creds_json)
+        state.recording_active = started
+        if not started:
+            logger.warning(
+                f"[{state.room_name}] ⚠️ Recording not started — call continues without recording"
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"[{state.room_name}] Recording fallback failed: {e}", exc_info=True)
+
+
+async def _await_recording_start(state: "CallState", timeout: float = 30.0) -> None:
+    """Let the fallback task finish attaching egress before we finalize at call end."""
+    task = state._recording_task
+    if task is None or task.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{state.room_name}] Egress start still pending after {timeout:.0f}s at call end"
+        )
+    except Exception as e:
+        logger.warning(f"[{state.room_name}] Egress start task failed: {e}")
+
+
+async def ensure_room_recording(room_name: str) -> tuple[bool, bool]:
+    """Attach egress at room creation (Cloud pattern).
+
+    Returns (recording_active, needs_fallback). A room created by SIP dispatch or an
+    external dialer already exists here, and CreateRoom silently ignores the new egress
+    config in that case, so the caller must run the fallback.
+    """
+    if not (ROOM_COMPOSITE_EGRESS_ENABLED or AUTO_TRACK_EGRESS_ENABLED):
+        logger.info(f"[{room_name}] Recording disabled by config")
+        return False, False
 
     gcs_creds_json = _load_gcs_creds_json(room_name)
     if not gcs_creds_json:
-        return False
+        return False, False
 
-    from livekit.protocol import egress as egress_proto
     from livekit.protocol import room as room_proto
 
-    filepath = _auto_track_egress_filepath()
     lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     try:
         await lkapi.room.create_room(
             room_proto.CreateRoomRequest(
                 name=room_name,
-                egress=room_proto.RoomEgress(
-                    tracks=egress_proto.AutoTrackEgress(
-                        filepath=filepath,
-                        gcp=egress_proto.GCPUpload(
-                            credentials=gcs_creds_json,
-                            bucket=GCS_BUCKET_NAME,
-                        ),
-                    ),
-                ),
+                egress=build_room_egress(gcs_creds_json),
             )
         )
-        logger.info(
-            f"[{room_name}] 🎬 Auto track egress configured → "
-            f"gs://{GCS_BUCKET_NAME}/{filepath}"
-        )
-        return True
+        logger.info(f"[{room_name}] 🎬 Room egress config submitted")
     except Exception as e:
-        # Room may already exist (created by dial/dispatch API with egress).
-        logger.info(f"[{room_name}] create_room for auto egress: {e}")
-        return True
+        logger.info(f"[{room_name}] create_room for egress: {e}")
     finally:
         await lkapi.aclose()
+
+    # CreateRoom is a no-op on an existing room, so trust list_egress, not the call above.
+    jobs = await _list_room_egress(room_name)
+    if jobs:
+        logger.info(f"[{room_name}] ✅ Egress active — {len(jobs)} job(s) attached")
+        return True, False
+
+    logger.warning(
+        f"[{room_name}] ⚠️ No egress attached (room pre-existed) — starting manual fallback"
+    )
+    return True, True
 
 
 async def stop_room_egress(egress_id: str, room_name: str):
@@ -397,16 +668,37 @@ def _egress_object_paths(item) -> list[str]:
     return paths
 
 
+_TRACK_SID_TOKEN = re.compile(r"^TR_[A-Za-z0-9]+$")
+_TIME_TOKEN = re.compile(r"^\d+$|^\d{2}T\d{6}$")
+
+
 def _publisher_identity_from_object_path(object_path: str) -> str:
+    """Auto track egress writes `{publisher_identity}-{time}-{track_id}.ogg`, and {time}
+    itself expands to a dashed ISO stamp, so strip trailing stamp/sid tokens."""
     basename = os.path.basename(object_path)
     stem, _ext = os.path.splitext(basename)
-    if "-" in stem:
-        return stem.rsplit("-", 1)[0]
-    return stem
+    tokens = stem.split("-")
+    while len(tokens) > 1 and (
+        _TRACK_SID_TOKEN.match(tokens[-1]) or _TIME_TOKEN.match(tokens[-1])
+    ):
+        tokens.pop()
+    return "-".join(tokens)
+
+
+_RECORDING_ROLE_ORDER = {"mixed": 0, "prospect": 1, "agent": 2}
 
 
 def _recording_role_for_object_path(object_path: str) -> str:
+    """mixed = room composite, prospect = callee/browser side, agent = our own audio."""
+    basename = os.path.basename(object_path)
+    stem, _ext = os.path.splitext(basename)
+    if stem.endswith(MIXED_RECORDING_SUFFIX):
+        return "mixed"
+
     identity = _publisher_identity_from_object_path(object_path).lower()
+    if identity.startswith("deck-"):
+        # LumiVoice Talk console: the browser participant is the prospect side.
+        return "prospect"
     digits = re.sub(r"\D", "", identity)
     if identity.startswith("sip") or len(digits) >= 10:
         return "prospect"
@@ -414,7 +706,8 @@ def _recording_role_for_object_path(object_path: str) -> str:
 
 
 def _pick_primary_recording_url(recordings: list[dict]) -> Optional[str]:
-    for preferred in ("prospect", "agent"):
+    """Mixed plays both sides, so prefer it for playback."""
+    for preferred in ("mixed", "prospect", "agent"):
         for entry in recordings:
             if entry.get("role") == preferred and entry.get("url"):
                 return entry["url"]
@@ -459,12 +752,8 @@ async def _wait_for_egress_complete(
     return []
 
 
-def _gcs_recording_object_path(room_name: str, ext: Optional[str] = None) -> str:
-    return f"recordings/{AGENT_NAME}/{room_name}/{room_name}{ext or RECORDING_FILE_EXT}"
-
-
 def _gcs_recording_object_candidates(room_name: str) -> list[str]:
-    return [_gcs_recording_object_path(room_name, RECORDING_FILE_EXT)]
+    return [_mixed_egress_filepath(room_name)]
 
 
 def _gcs_object_exists(object_path: str) -> bool:
@@ -910,7 +1199,8 @@ class CallState:
         self.forced_next_steps: Optional[str]         = None
         self.forced_agent_notes: Optional[str]        = None
         self.session:          Optional[AgentSession] = None
-        self.auto_egress_enabled: bool               = False
+        self.recording_active:    bool               = False
+        self.recording_needs_fallback: bool          = False
         self.recording_url:    Optional[str]          = None
         self.recording_urls:   list[dict]             = []
 
@@ -926,6 +1216,7 @@ class CallState:
 
         self._max_duration_task: Optional[asyncio.Task] = None
         # [C2] Keep hard ref to recording task so GC doesn't collect it
+        self._recording_task:      Optional[asyncio.Task] = None
         self._recording_finalized: bool                  = False
         self._recording_lock:       asyncio.Lock          = asyncio.Lock()
         self._shutdown_task:       Optional[asyncio.Task] = None
@@ -975,9 +1266,32 @@ class CallState:
 # ════════════════════════════════════════════════════════════════════════════════
 # POST-CALL HANDLER
 # ════════════════════════════════════════════════════════════════════════════════
+async def _collect_egress_recordings(state: CallState, egress_id: str) -> list[dict]:
+    """Wait for one egress job then sign every file it produced."""
+    object_paths = await _wait_for_egress_complete(egress_id, state.room_name, timeout=45.0)
+    entries: list[dict] = []
+    for object_path in object_paths:
+        role = _recording_role_for_object_path(object_path)
+        # The egress result already gives the final object path, so skip the GCS poll.
+        recording_url = await get_gcs_signed_url(
+            state.room_name,
+            object_path=object_path,
+            wait_timeout=0.0,
+        )
+        entries.append({
+            "role": role,
+            "egress_id": egress_id,
+            "object_path": object_path,
+            "url": recording_url or f"egress:{egress_id}",
+        })
+        if recording_url:
+            logger.info(f"[{state.room_name}]  {role} recording URL ready")
+    return entries
+
+
 async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) -> None:
-    """Stop auto egress jobs, wait for GCS uploads, sign URLs, send recording_ready webhook."""
-    if not state.auto_egress_enabled:
+    """Stop egress jobs, wait for GCS uploads, sign URLs, send recording_ready webhook."""
+    if not state.recording_active:
         return
 
     async with state._recording_lock:
@@ -991,44 +1305,33 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
                 logger.warning(f"[{state.room_name}] No egress jobs found for room")
                 return
 
-            for item in items:
-                status = egress_proto.EgressStatus.Name(item.status)
-                if status not in _EGRESS_DONE_STATUSES:
-                    await stop_room_egress(item.egress_id, state.room_name)
+            await asyncio.gather(*[
+                stop_room_egress(item.egress_id, state.room_name)
+                for item in items
+                if egress_proto.EgressStatus.Name(item.status) not in _EGRESS_DONE_STATUSES
+            ])
+
+            # Jobs finish independently; waiting sequentially blows the finalize budget.
+            results = await asyncio.gather(
+                *[_collect_egress_recordings(state, item.egress_id) for item in items],
+                return_exceptions=True,
+            )
 
             recordings: list[dict] = []
             seen_paths: set[str] = set()
-            for item in items:
-                object_paths = await _wait_for_egress_complete(
-                    item.egress_id, state.room_name, timeout=45.0
-                )
-                for object_path in object_paths:
-                    if object_path in seen_paths:
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.warning(f"[{state.room_name}] Egress collect failed: {result}")
+                    continue
+                for entry in result:
+                    if entry["object_path"] in seen_paths:
                         continue
-                    seen_paths.add(object_path)
-                    role = _recording_role_for_object_path(object_path)
-                    logger.info(f"[{state.room_name}] Generating GCS signed URL for {role}...")
-                    recording_url = await get_gcs_signed_url(
-                        state.room_name,
-                        object_path=object_path,
-                        wait_timeout=45.0,
-                    )
-                    entry = {
-                        "role": role,
-                        "egress_id": item.egress_id,
-                        "object_path": object_path,
-                        "url": recording_url or f"egress:{item.egress_id}",
-                    }
+                    seen_paths.add(entry["object_path"])
                     recordings.append(entry)
-                    if recording_url:
-                        logger.info(
-                            f"[{state.room_name}]  Got {role} recording URL: {recording_url[:80]}..."
-                        )
 
+            recordings.sort(key=lambda entry: _RECORDING_ROLE_ORDER.get(entry["role"], 99))
             state.recording_urls = recordings
             state.recording_url = _pick_primary_recording_url(recordings)
-            if not state.recording_url and recordings:
-                state.recording_url = recordings[0]["url"]
         except Exception as e:
             logger.error(f"[{state.room_name}] Recording finalize failed: {e}")
         finally:
@@ -1046,7 +1349,8 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
         })
         logger.info(
             f"[{state.room_name}] ✅ recording_ready webhook sent "
-            f"({len(state.recording_urls)} track(s))"
+            f"({len(state.recording_urls)} file(s): "
+            f"{', '.join(entry['role'] for entry in state.recording_urls)})"
         )
 
 
@@ -1058,7 +1362,9 @@ async def _handle_call_end(state: CallState):
 
     _cancel_max_duration_timer(state)
 
-    if state.auto_egress_enabled and not state._recording_finalized:
+    await _await_recording_start(state)
+
+    if state.recording_active and not state._recording_finalized:
         try:
             await asyncio.wait_for(
                 _finalize_recording(state),
@@ -2007,7 +2313,9 @@ async def entrypoint(ctx: JobContext):
     )
 
     state = CallState(ctx)
-    state.auto_egress_enabled = await ensure_auto_track_egress_room(state.room_name)
+    state.recording_active, state.recording_needs_fallback = await ensure_room_recording(
+        state.room_name
+    )
 
     # ── Extract inbound caller number ─────────────────────────────────────────
     if state.is_inbound and not state.contact_number:
@@ -2188,6 +2496,13 @@ async def entrypoint(ctx: JobContext):
                 _enforce_max_call_duration(state, session),
                 name=f"max-duration-{state.room_name[:24]}",
             )
+            if state.recording_needs_fallback and (
+                state._recording_task is None or state._recording_task.done()
+            ):
+                state._recording_task = asyncio.create_task(
+                    _run_recording_fallback(ctx.room, state),
+                    name=f"egress-fallback-{state.room_name[:24]}",
+                )
             logger.info(f"✅ Agent started successfully (max conversation: {MAX_CALL_SECONDS}s)")
 
             # [H11] Close previous zombie session after new one is running

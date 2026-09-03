@@ -12,7 +12,6 @@ import {
   toWsLivekitUrl,
   verifyLiveKitCredentials,
 } from "@/lib/livekit";
-import { coerceLocalLiveKitCredentials } from "@/lib/livekit/local-defaults";
 import { deleteProjectSchema, updateProjectSchema } from "@/lib/validators/auth";
 
 type RouteContext = {
@@ -79,24 +78,13 @@ export async function PATCH(request: Request, context: RouteContext) {
   const nextSecretRaw = parsed.data.livekitApiSecret?.trim();
   const storedSecret = decryptSecret(current.livekitApiSecret);
 
-  let livekitUrl = parsed.data.livekitUrl ? toHttpLivekitUrl(parsed.data.livekitUrl) : current.livekitUrl;
-  let livekitApiKey = parsed.data.livekitApiKey ?? current.livekitApiKey;
-  let livekitApiSecret = nextSecretRaw || storedSecret;
+  const livekitUrl = parsed.data.livekitUrl ? toHttpLivekitUrl(parsed.data.livekitUrl) : current.livekitUrl;
+  const livekitApiKey = parsed.data.livekitApiKey ?? current.livekitApiKey;
+  const livekitApiSecret = nextSecretRaw || storedSecret;
   let publicLivekitUrl = current.publicLivekitUrl;
   if (parsed.data.publicLivekitUrl !== undefined) {
     const nextPublic = parsed.data.publicLivekitUrl.trim();
     publicLivekitUrl = nextPublic ? toWsLivekitUrl(nextPublic) : null;
-  }
-
-  if (nextSecretRaw) {
-    const coerced = coerceLocalLiveKitCredentials({
-      livekitUrl,
-      livekitApiKey,
-      livekitApiSecret,
-    });
-    livekitUrl = coerced.livekitUrl;
-    livekitApiKey = coerced.livekitApiKey;
-    livekitApiSecret = coerced.livekitApiSecret;
   }
 
   const credentialsChanged =

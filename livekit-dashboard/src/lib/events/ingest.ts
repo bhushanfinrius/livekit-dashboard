@@ -49,6 +49,7 @@ async function ingestViaInfraKey(body: string, token: string) {
   const roomName = event.room?.name ?? event.egressInfo?.roomName;
   const projectId = await resolveProjectIdForRoom(roomName);
   if (!projectId) {
+    console.error("[webhook] no project owns room", roomName ?? "(unknown)");
     throw new Error(`no project owns room ${roomName ?? "(unknown)"}`);
   }
 
@@ -103,6 +104,23 @@ export async function ingestLiveKitWebhook(options: {
       // fired participant_joined and started yet another composite.
     } catch (error) {
       lastError = error;
+      const room =
+        (() => {
+          try {
+            const parsed = JSON.parse(options.body) as {
+              room?: { name?: string };
+              egressInfo?: { roomName?: string };
+            };
+            return parsed.room?.name || parsed.egressInfo?.roomName || "";
+          } catch {
+            return "";
+          }
+        })();
+      console.error(
+        "[webhook] ingest failed",
+        room ? `room=${room}` : "",
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 

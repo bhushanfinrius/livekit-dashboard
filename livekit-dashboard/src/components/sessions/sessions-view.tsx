@@ -17,14 +17,14 @@ import { StatusLine } from "@/components/page-skeleton";
 import { FeaturePills } from "@/components/sessions/feature-pills";
 import { apiJson } from "@/lib/api/client";
 import type { LiveWebhookEvent } from "@/lib/events/types";
-import { formatDuration, formatWhen } from "@/lib/format";
+import { formatDuration, formatRelativeTime } from "@/lib/format";
 import {
   OVERVIEW_RANGE_LABELS,
   OVERVIEW_RANGES,
   type ChartPoint,
   type OverviewRange,
 } from "@/lib/overview/types";
-import { SESSION_EVENT_TYPES } from "@/lib/sessions/types";
+import { SESSION_EVENT_TYPES, sessionDisplayId } from "@/lib/sessions/types";
 import type { SessionSnapshot, SessionsPayload } from "@/lib/sessions/types";
 
 const SESSION_EVENTS = new Set<string>(SESSION_EVENT_TYPES);
@@ -153,7 +153,8 @@ export function SessionsView({
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="bg-panel-2 text-xs tracking-wide text-muted-foreground uppercase">
               <tr>
-                <th className="px-3 py-2 font-medium">Room</th>
+                <th className="px-3 py-2 font-medium">Session ID</th>
+                <th className="px-3 py-2 font-medium">Room name</th>
                 <th className="px-3 py-2 font-medium">Started</th>
                 <th className="px-3 py-2 font-medium">Ended</th>
                 <th className="px-3 py-2 font-medium">Duration</th>
@@ -187,12 +188,13 @@ export function SessionsView({
                       }
                     }}
                   >
+                    <td className="px-3 py-2 font-mono text-xs">{sessionDisplayId(session)}</td>
                     <td className="px-3 py-2 font-mono">{session.roomName}</td>
                     <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                      {formatWhen(session.startedAt)}
+                      {formatRelativeTime(session.startedAt, now)}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                      {session.endedAt ? formatWhen(session.endedAt) : "—"}
+                      {session.endedAt ? formatRelativeTime(session.endedAt, now) : "—"}
                     </td>
                     <td className="px-3 py-2 font-mono tabular-nums text-muted-foreground">
                       {formatDuration(duration)}

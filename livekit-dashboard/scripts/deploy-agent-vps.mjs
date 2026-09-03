@@ -146,6 +146,16 @@ async function prepareRuntimeEnv(agentName, entrypoint) {
   return { starter, buildContext: agentBuildContextForCompose(starter) };
 }
 
+function dockerComposeDeck(args) {
+  const cmd = `docker compose -f docker-compose.yml -f docker-compose.vps.yml ${args}`;
+  execSync(cmd, {
+    cwd: DASHBOARD_ROOT,
+    stdio: "inherit",
+    env: process.env,
+    shell: true,
+  });
+}
+
 function dockerCompose(args, buildContext) {
   const cmd = `docker compose ${COMPOSE_FILES.join(" ")} --profile agent ${args}`;
   execSync(cmd, {
@@ -239,6 +249,8 @@ async function main() {
     const { starter, buildContext } = await prepareRuntimeEnv(agentName, entrypoint);
     console.log(`Starter: ${starter}`);
     console.log(`Deploying "${agentName}" (${entrypoint})…`);
+    console.log("Rebuilding LumiVoice (deck) so Sessions/Overview/transcripts match this code…");
+    dockerComposeDeck("up -d --build --no-deps deck");
     const buildFlag = flags.has("--no-build") ? "--no-build" : "--build";
     dockerCompose(`up -d ${buildFlag} --force-recreate --no-deps agent`, buildContext);
     dockerCompose("ps agent", buildContext);

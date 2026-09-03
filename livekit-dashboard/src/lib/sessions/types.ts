@@ -88,3 +88,10 @@ export const SESSION_EVENT_TYPES = [
   "participant_left",
   "participant_connection_aborted",
 ] as const;
+
+export function sessionDisplayId(session: SessionSnapshot) {
+  const sid = session.roomSid?.trim();
+  if (sid) return sid;
+  if (session.id.startsWith("implicit:") || session.id.startsWith("egress:")) return session.roomName;
+  return session.id;
+}

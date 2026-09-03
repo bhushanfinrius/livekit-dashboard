@@ -156,8 +156,10 @@ export function parseSessionTranscripts(
   const seen = new Set<string>();
   return lines
     .filter((line) => {
-      if (seen.has(line.id)) return false;
+      const textKey = `${line.speaker}:${line.text}`;
+      if (seen.has(line.id) || seen.has(textKey)) return false;
       seen.add(line.id);
+      seen.add(textKey);
       return line.text.length > 0;
     })
     .sort((a, b) => a.offsetMs - b.offsetMs || (a.at ?? "").localeCompare(b.at ?? ""));

@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/db";
 import { listRecentWebhookEvents } from "@/lib/events/store";
 import { liveKitErrorMessage, type ProjectLiveKit } from "@/lib/livekit";
-import { parseParticipantMeta, parseRoomMeta } from "@/lib/overview/payload";
-import { buildOverviewSeries, labelFor, rangeWindow } from "@/lib/overview/series";
+import { kindLabel, parseParticipantMeta, parseRoomMeta } from "@/lib/overview/payload";
+import { buildOverviewSeries, labelFor, minutesFromSessions, rangeWindow } from "@/lib/overview/series";
 import {
   CHART_EVENT_TYPES,
   type ChartPoint,
@@ -11,6 +11,7 @@ import {
   type OverviewRange,
 } from "@/lib/overview/types";
 import { reconstructSessions, sessionOverlapsRange } from "@/lib/sessions/reconstruct";
+import { loadSessions } from "@/lib/sessions/load";
 
 export async function loadOverview(
   livekit: ProjectLiveKit,
@@ -103,40 +104,65 @@ export async function loadOverview(
   const reconstructed = reconstructSessions(mapped.map((row) => row.session), now).filter((session) =>
     sessionOverlapsRange(session, start, end, now),
   );
-  const sipSessions = reconstructed.filter((session) => session.features.includes("sip")).length;
+  const sessionPayload = await loadSessions(projectId, range);
+  const sessions = sessionPayload.sessions.length > 0 ? sessionPayload.sessions : reconstructed;
+  const sipSessions = sessions.filter((session) => session.features.includes("sip")).length;
   const averageSize =
-    reconstructed.length === 0
+    sessions.length === 0
       ? 0
-      : reconstructed.reduce((sum, session) => sum + session.participantCount, 0) / reconstructed.length;
+      : sessions.reduce((sum, session) => sum + session.participantCount, 0) / sessions.length;
   const averageDurationSeconds =
-    reconstructed.length === 0
+    sessions.length === 0
       ? 0
-      : reconstructed.reduce((sum, session) => sum + session.durationSeconds, 0) / reconstructed.length;
+      : sessions.reduce((sum, session) => sum + session.durationSeconds, 0) / sessions.length;
 
-  const sessionCounts: ChartPoint[] = [];
-  for (let t = start; t < end; t += step) {
-    const bucketEnd = Math.min(t + step, end);
-    sessionCounts.push({
-      date: labelFor(t, range),
-      value: reconstructed.filter((session) => sessionOverlapsRange(session, t, bucketEnd, now)).length,
-    });
+  const sessionCounts: ChartPoint[] =
+    sessionPayload.roomCountSeries.length > 0
+      ? sessionPayload.roomCountSeries
+      : [];
+  if (sessionCounts.length === 0) {
+    for (let t = start; t < end; t += step) {
+      const bucketEnd = Math.min(t + step, end);
+      sessionCounts.push({
+        date: labelFor(t, range),
+        value: sessions.filter((session) => sessionOverlapsRange(session, t, bucketEnd, now)).length,
+      });
+    }
   }
 
+  const fromSessions = minutesFromSessions(sessions, start, end);
   const agentMinutes =
-    series.minutesByKind.find((slice) => slice.name.startsWith("Agent"))?.minutes ?? 0;
-  const sipMinutes = series.minutesByKind.find((slice) => slice.name.startsWith("SIP"))?.minutes ?? 0;
+    series.minutesByKind.find((slice) => slice.name.startsWith("Agent"))?.minutes || fromSessions.byKind.agent;
+  const sipMinutes =
+    series.minutesByKind.find((slice) => slice.name.startsWith("SIP"))?.minutes || fromSessions.byKind.sip;
+  const participantMinutesTotal =
+    series.participantMinutesTotal > 0 ? series.participantMinutesTotal : fromSessions.total;
+  const webhookParticipantTotal = series.participantCounts.reduce((sum, point) => sum + point.value, 0);
+  const participantCounts =
+    webhookParticipantTotal > 0
+      ? series.participantCounts
+      : sessionPayload.uniqueParticipantSeries.length > 0
+        ? sessionPayload.uniqueParticipantSeries
+        : series.participantCounts;
 
   return {
     live,
     range,
     connectionSuccessPct: series.connectionSuccessPct,
     connectionSuccess: series.connectionSuccess,
-    participantMinutesTotal: series.participantMinutesTotal,
-    minutesByKind: series.minutesByKind,
-    participantCounts: series.participantCounts,
+    participantMinutesTotal,
+    minutesByKind:
+      series.participantMinutesTotal > 0
+        ? series.minutesByKind
+        : [
+            { name: kindLabel("webrtc"), minutes: fromSessions.byKind.webrtc },
+            { name: kindLabel("sip"), minutes: fromSessions.byKind.sip },
+            { name: kindLabel("agent"), minutes: fromSessions.byKind.agent },
+          ],
+    participantCounts,
     topRegions: series.topRegions,
     rooms: {
-      totalSessions: reconstructed.length,
+      totalSessions: sessions.length,
       averageSize: Math.round(averageSize * 10) / 10,
       averageDurationSeconds: Math.round(averageDurationSeconds),
       sessionCounts,

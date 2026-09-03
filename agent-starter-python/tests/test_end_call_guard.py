@@ -11,9 +11,11 @@ from agent import (  # noqa: E402
     END_CALL_MIN_CONV_SECONDS,
     END_CALL_MIN_TURNS,
     end_call_allowed,
+    history_lines_from_report,
     looks_like_busy_callback,
     looks_like_continue_invite,
     looks_like_not_interested,
+    should_end_as_no_answer,
 )
 
 
@@ -120,6 +122,38 @@ def test_allows_after_minimum_conversation() -> None:
     )
     allowed, _reason = end_call_allowed(state)
     assert allowed is True
+
+
+def test_later_alone_is_not_busy_callback() -> None:
+    assert not looks_like_busy_callback("later")
+    assert not looks_like_busy_callback("ok later maybe")
+    assert looks_like_busy_callback("call me back")
+    assert looks_like_busy_callback("call me later")
+
+
+def test_no_answer_only_without_remote_participants() -> None:
+    assert should_end_as_no_answer([]) is True
+    assert should_end_as_no_answer([""]) is True
+    assert should_end_as_no_answer(["sip_918177938974"]) is False
+    assert should_end_as_no_answer(["agent-AJ_abc", "sip_1"]) is False
+
+
+def test_history_lines_from_session_report() -> None:
+    lines = history_lines_from_report(
+        {
+            "chat_history": {
+                "items": [
+                    {"role": "assistant", "content": "Namaste, main Kinjal bol rahi hoon."},
+                    {"role": "user", "content": "Haan, boliye."},
+                    {"role": "system", "content": "ignored"},
+                ]
+            }
+        }
+    )
+    assert lines == [
+        ("agent", "Kinjal (Lumiverse)", "Namaste, main Kinjal bol rahi hoon."),
+        ("user", "Prospect", "Haan, boliye."),
+    ]
 
 
 if __name__ == "__main__":

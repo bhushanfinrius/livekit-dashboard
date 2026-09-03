@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mergeEgressIntoSessions, reconstructSessions } from "@/lib/sessions/reconstruct";
-import { findSessionSnapshot, sessionDisplayId, sessionLookupKeys, type SessionSnapshot } from "@/lib/sessions/types";
+import { findSessionSnapshot, roomNameFromSessionRef, sessionDisplayId, sessionLookupKeys, type SessionSnapshot } from "@/lib/sessions/types";
 
 function session(partial: Partial<SessionSnapshot> & Pick<SessionSnapshot, "id" | "roomName">): SessionSnapshot {
   return {
@@ -144,6 +144,21 @@ describe("sessionDisplayId", () => {
     });
     expect(sessionLookupKeys(item, "RM_abc123")).toEqual(
       expect.arrayContaining(["test-2e551bbd-20260903_174752_957041", "RM_abc123"]),
+    );
+  });
+
+  it("extracts the LiveKit room name from an egress session id", () => {
+    const egressId = "egress:test-2e551bbd-20260903_181429_538849:1788439471608";
+    expect(roomNameFromSessionRef(egressId)).toBe("test-2e551bbd-20260903_181429_538849");
+    const item = session({
+      id: egressId,
+      roomName: "test-2e551bbd-20260903_181429_538849",
+    });
+    expect(sessionLookupKeys(item, egressId)).toEqual(
+      expect.arrayContaining(["test-2e551bbd-20260903_181429_538849"]),
+    );
+    expect(findSessionSnapshot([item], egressId)?.roomName).toBe(
+      "test-2e551bbd-20260903_181429_538849",
     );
   });
 });

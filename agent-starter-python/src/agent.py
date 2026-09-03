@@ -1889,6 +1889,9 @@ _CLOSING_GREETING_INSTRUCTION = (
 
 async def _deliver_closing_greeting(session: AgentSession, room_name: str) -> None:
     """[H13] Closing greeting with hard timeout — never hangs the call."""
+    if not _session_has_tts(session):
+        logger.info(f"[{room_name}] Skipping closing generate_reply on Gemini Live")
+        return
     try:
         handle = session.generate_reply(instructions=_CLOSING_GREETING_INSTRUCTION)
         await asyncio.wait_for(handle.wait_for_playout(), timeout=15.0)
@@ -2447,7 +2450,7 @@ _GREETING_INSTRUCTION = (
     "Do not introduce yourself. Do not add any other words. Then stop and wait for them to respond."
 )
 GREETING_PLAYOUT_TIMEOUT = float(os.getenv("GREETING_PLAYOUT_TIMEOUT", "8"))
-GREETING_HELLO_WAIT_SECONDS = float(os.getenv("GREETING_HELLO_WAIT_SECONDS", "4"))
+GREETING_HELLO_WAIT_SECONDS = float(os.getenv("GREETING_HELLO_WAIT_SECONDS", "1"))
 
 
 def _session_has_tts(session: AgentSession) -> bool:
@@ -2479,12 +2482,10 @@ async def _wait_for_speech_handle(handle, timeout: float) -> None:
 
 
 async def _speak_opening_hello(session: AgentSession) -> None:
-    """Kick Hello on Gemini Live via generate_reply. Never call say() without TTS."""
-    if _session_has_tts(session):
-        await _wait_for_speech_handle(session.say("Hello"), GREETING_PLAYOUT_TIMEOUT)
+    """Piped TTS only. Gemini Live has no say()/generate_reply greeting path."""
+    if not _session_has_tts(session):
         return
-    handle = session.generate_reply(instructions=_GREETING_INSTRUCTION)
-    await _wait_for_speech_handle(handle, GREETING_PLAYOUT_TIMEOUT)
+    await _wait_for_speech_handle(session.say("Hello"), GREETING_PLAYOUT_TIMEOUT)
 
 
 async def _greet_prospect(session: AgentSession, state: CallState) -> None:
@@ -2498,7 +2499,7 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
             if _agent_already_said_hello(state):
                 state._greeting_sent = True
                 logger.info(
-                    f"[{state.room_name}] Gemini Live already said Hello — skipping session.say()"
+                    f"[{state.room_name}] Gemini Live already said Hello — skipping generate_reply"
                 )
                 return
             await asyncio.sleep(0.4)
@@ -2507,7 +2508,17 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
         if _agent_already_said_hello(state):
             state._greeting_sent = True
             logger.info(
-                f"[{state.room_name}] Gemini Live already said Hello — skipping session.say()"
+                f"[{state.room_name}] Gemini Live already said Hello — skipping generate_reply"
+            )
+            return
+
+        if not _session_has_tts(session):
+            # CALL_FLOW already opens with Hello. generate_reply races Gemini Live:
+            # "received server content but no active generation" then
+            # "generate_reply timed out waiting for generation_created".
+            state._greeting_sent = True
+            logger.info(
+                f"[{state.room_name}] Gemini Live greeting owned by CALL_FLOW — not calling generate_reply"
             )
             return
 
@@ -2714,6 +2725,11 @@ async def entrypoint(ctx: JobContext):
     state = CallState(ctx)
     _ACTIVE_CALLS[state.room_name] = state
     _deck_transcript_url_ok()
+    logger.info(
+        "[deck-transcript] url=%s secret=%s",
+        DECK_TRANSCRIPT_URL or "(empty)",
+        "set" if DECK_TRANSCRIPT_SECRET else "MISSING",
+    )
     await register_deck_room(state.room_name)
     state.recording_active, state.recording_needs_fallback = await ensure_room_recording(
         state.room_name

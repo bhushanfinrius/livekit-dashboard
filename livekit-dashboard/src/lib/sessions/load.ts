@@ -246,7 +246,6 @@ export async function loadSessionDetail(
   const started = new Date(Date.parse(session.startedAt) - 1000);
   const ended = new Date((session.endedAt ? Date.parse(session.endedAt) : now) + 1000);
   const roomKeys = sessionLookupKeys(session, sessionId);
-  const transcriptStarted = new Date(started.getTime() - 2 * 60_000);
 
   const [eventRows, transcriptRows] = await Promise.all([
     prisma.webhookEvent.findMany({
@@ -266,7 +265,6 @@ export async function loadSessionDetail(
         projectId,
         eventType: "transcription",
         roomName: { in: roomKeys },
-        createdAt: { gte: transcriptStarted },
       },
       orderBy: { createdAt: "asc" },
       take: 500,

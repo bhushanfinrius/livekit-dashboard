@@ -234,7 +234,7 @@ def test_session_without_tts_does_not_claim_say() -> None:
 
 
 @pytest.mark.asyncio
-async def test_speak_opening_hello_uses_generate_reply_without_tts() -> None:
+async def test_speak_opening_hello_skips_generate_reply_without_tts() -> None:
     class FakeSession:
         tts = None
         say_calls = 0
@@ -242,24 +242,16 @@ async def test_speak_opening_hello_uses_generate_reply_without_tts() -> None:
 
         def say(self, text):
             self.say_calls += 1
-            raise RuntimeError(
-                "trying to generate speech from text without a TTS model or a "
-                "RealtimeSession that supports say(); add a TTS model to AgentSession to enable say()"
-            )
+            raise RuntimeError("say() must not run on Gemini Live")
 
         def generate_reply(self, instructions=None):
             self.reply_calls += 1
-
-            class Handle:
-                async def wait_for_playout(self):
-                    return None
-
-            return Handle()
+            raise AssertionError("generate_reply must not run on Gemini Live")
 
     session = FakeSession()
     await _speak_opening_hello(session)
     assert session.say_calls == 0
-    assert session.reply_calls == 1
+    assert session.reply_calls == 0
 
 
 @pytest.mark.asyncio
@@ -280,6 +272,30 @@ async def test_greet_skips_when_gemini_already_said_hello(monkeypatch) -> None:
             raise AssertionError("generate_reply should be skipped")
 
     state = FakeState(transcript_parts=["Aarya: Hello."])
+    state.room_name = "test-room"
+    state._greeting_sent = False
+    state._greeting_lock = asyncio.Lock()
+    session = FakeSession()
+    await _greet_prospect(session, state)
+    assert state._greeting_sent is True
+    assert session.reply_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_greet_does_not_call_generate_reply_on_realtime(monkeypatch) -> None:
+    import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "GREETING_HELLO_WAIT_SECONDS", 0.0)
+
+    class FakeSession:
+        tts = None
+        reply_calls = 0
+
+        def generate_reply(self, instructions=None):
+            self.reply_calls += 1
+            raise AssertionError("generate_reply races Gemini Live")
+
+    state = FakeState(transcript_parts=["Prospect: Hello."])
     state.room_name = "test-room"
     state._greeting_sent = False
     state._greeting_lock = asyncio.Lock()

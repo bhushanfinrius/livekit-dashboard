@@ -11,6 +11,7 @@ from agent import (  # noqa: E402
     END_CALL_MIN_CONV_SECONDS,
     END_CALL_MIN_TURNS,
     end_call_allowed,
+    looks_like_busy_callback,
     looks_like_continue_invite,
     looks_like_not_interested,
 )
@@ -45,6 +46,8 @@ def test_continue_invite_phrases() -> None:
     assert looks_like_continue_invite("hello")
     assert looks_like_continue_invite("go ahead")
     assert not looks_like_not_interested("जी बोलिए।")
+    assert looks_like_busy_callback("I'm busy, call back at 2:30")
+    assert looks_like_busy_callback("बाद में call करना")
 
 
 def test_blocks_end_call_on_go_ahead() -> None:
@@ -87,7 +90,17 @@ def test_blocks_few_turns() -> None:
     assert str(END_CALL_MIN_TURNS) in reason
 
 
-def test_allows_not_interested() -> None:
+def test_allows_busy_callback() -> None:
+    state = FakeState(
+        transcript_parts=[
+            "Kinjal (Lumiverse): Hello.",
+            "Prospect: I'm busy, call me back at 2:30.",
+        ],
+        conv_seconds=5,
+    )
+    allowed, reason = end_call_allowed(state)
+    assert allowed is True
+    assert "call back" in reason.lower()
     state = FakeState(
         transcript_parts=[
             "Kinjal (Lumiverse): Hello.",

@@ -7,6 +7,7 @@ import type {
   IngressSnapshot,
   IngressStateLabel,
 } from "@/lib/livekit/egress-types";
+import { identitiesFromRecordingOutputs } from "@/lib/sessions/recording-role";
 
 const STATUS: Record<number, EgressStatusLabel> = {
   0: "starting",
@@ -90,6 +91,17 @@ function outputLocation(info: EgressInfo): string | null {
   );
 }
 
+function fileLocations(info: EgressInfo): string[] {
+  const locations: string[] = [];
+  for (const file of info.fileResults ?? []) {
+    const value = firstText(file.location, file.filename);
+    if (value) locations.push(value);
+  }
+  const primary = outputLocation(info);
+  if (primary && !locations.includes(primary)) locations.push(primary);
+  return locations;
+}
+
 export function toEgressSnapshot(info: EgressInfo): EgressSnapshot {
   const status = STATUS[info.status] ?? "unknown";
   return {
@@ -102,6 +114,7 @@ export function toEgressSnapshot(info: EgressInfo): EgressSnapshot {
     output: outputLocation(info),
     error: info.error?.trim() || null,
     active: ACTIVE_STATUS.has(status),
+    identities: identitiesFromRecordingOutputs(fileLocations(info), jobType(info)),
   };
 }
 

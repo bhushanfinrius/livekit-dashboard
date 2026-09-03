@@ -40,6 +40,22 @@ describe("resolveProjectIdForRoom", () => {
     expect(await resolveProjectIdForRoom("mystery-room")).toBe("p-solo");
   });
 
+  it("matches a project id embedded in the room name", async () => {
+    findManyProjects.mockResolvedValue([
+      { id: "clabcdefghijk" },
+      { id: "clotherproject" },
+    ]);
+    expect(await resolveProjectIdForRoom("test-clabcdefghijk-20260903")).toBe("clabcdefghijk");
+  });
+
+  it("matches a unique 8-char project id prefix in the room name", async () => {
+    findManyProjects.mockResolvedValue([
+      { id: "clabcdefghijk" },
+      { id: "clotherproject" },
+    ]);
+    expect(await resolveProjectIdForRoom("test-clabcdef-20260903")).toBe("clabcdefghijk");
+  });
+
   it("refuses to guess between several projects", async () => {
     findManyProjects.mockResolvedValue([{ id: "p-a" }, { id: "p-b" }]);
     expect(await resolveProjectIdForRoom("mystery-room")).toBeNull();

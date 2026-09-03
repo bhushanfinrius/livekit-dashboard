@@ -92,7 +92,155 @@ function looksLikeFilePath(value) {
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith("{") || trimmed.startsWith("[")) return false;
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return false;
+  // Already rewritten to a container path by a previous deploy.
+  if (trimmed.startsWith("/secrets/")) return false;
   return /\.(json|pem|p12)$/i.test(trimmed);
+}
+
+export function encodeEnvFile(values) {
+  return (
+    Object.entries(values)
+      .map(([key, value]) => `${key}=${JSON.stringify(String(value))}`)
+      .join("\n") + "\n"
+  );
+}
+
+export const AGENT_ROOM_PREFIXES = ["test-", "camp-", "deck-call-", "deck-console-"];
+
+/**
+ * Point the agent at LumiVoice over the Compose network and register campaign
+ * room prefixes so LiveKit webhooks attribute to the project that owns the API key.
+ */
+export async function applyDeckTranscriptEnv(dashboardRoot, env) {
+  const next = { ...env };
+  const secret = loadDotEnv(dashboardRoot).DECK_TRANSCRIPT_SECRET?.trim();
+  if (secret) next.DECK_TRANSCRIPT_SECRET = secret;
+
+  const apiKey = next.LIVEKIT_API_KEY?.trim();
+  if (!apiKey) {
+    console.warn("No LIVEKIT_API_KEY in agent env — cannot set DECK_TRANSCRIPT_URL");
+    return next;
+  }
+
+  applyHostDatabaseUrl(dashboardRoot);
+  const PrismaClient = await loadPrismaClient(dashboardRoot);
+  const prisma = new PrismaClient();
+  try {
+    const project = await prisma.project.findFirst({
+      where: {
+        OR: [{ livekitApiKey: apiKey }, { apiKeys: { some: { apiKey } } }],
+      },
+      select: { id: true },
+    });
+    if (!project) {
+      console.warn(
+        "No LumiVoice project owns this LIVEKIT_API_KEY — transcripts will not ingest.",
+      );
+      return next;
+    }
+
+    next.DECK_TRANSCRIPT_URL = `http://deck:3000/api/projects/${project.id}/sessions/transcripts`;
+    for (const prefix of AGENT_ROOM_PREFIXES) {
+      await prisma.projectRoomPrefix.upsert({
+        where: { projectId_prefix: { projectId: project.id, prefix } },
+        update: {},
+        create: { projectId: project.id, prefix },
+      });
+    }
+    console.log(`  LumiVoice transcripts → ${next.DECK_TRANSCRIPT_URL}`);
+    return next;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export async function rewriteAgentTranscriptEnv(dashboardRoot) {
+  const runtimePath = path.join(dashboardRoot, ".agent.runtime.env");
+  if (!existsSync(runtimePath)) return null;
+  const env = parseEnvFile(readFileSync(runtimePath, "utf8"));
+  const next = await applyDeckTranscriptEnv(dashboardRoot, env);
+  writeFileSync(runtimePath, encodeEnvFile(next), "utf8");
+  return next;
+}
+
+export function agentStarterDir(dashboardRoot) {
+  const fromEnv =
+    process.env.AGENT_BUILD_CONTEXT?.trim() ||
+    loadDotEnv(dashboardRoot).AGENT_BUILD_CONTEXT?.trim();
+  const raw = fromEnv || "../agent-starter-python";
+  return path.isAbsolute(raw) ? raw : path.resolve(dashboardRoot, raw);
+}
+
+export function vpsComposeFiles(dashboardRoot) {
+  const files = [...VPS_COMPOSE_FILES];
+  if (existsSync(path.join(dashboardRoot, "docker-compose.agent.yml"))) {
+    files.push("-f", "docker-compose.agent.yml");
+  }
+  return files;
+}
+
+/**
+ * Remap Vertex/GCS JSON files from the starter checkout onto /secrets/N-name.json
+ * and write docker-compose.agent.yml so `vps:install:agent` does not drop mounts.
+ * Host paths come from agent-starter-python/.env.local, not from already-rewritten
+ * .agent.runtime.env container paths.
+ */
+export function syncAgentCredentialMounts(dashboardRoot) {
+  const starter = agentStarterDir(dashboardRoot);
+  const envLocal = path.join(starter, ".env.local");
+  const runtimePath = path.join(dashboardRoot, ".agent.runtime.env");
+  const overridePath = path.join(dashboardRoot, "docker-compose.agent.yml");
+
+  if (!existsSync(envLocal)) {
+    console.warn(
+      `Missing ${envLocal} — Vertex/GCS JSON files will not be mounted.\n` +
+        "  Put solvoxai.json and livekit-storage.json in agent-starter-python/ and set\n" +
+        "  GOOGLE_APPLICATION_CREDENTIALS=solvoxai.json (and GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json).",
+    );
+    return { mounts: [], starter };
+  }
+
+  const starterEnv = parseEnvFile(readFileSync(envLocal, "utf8"));
+  if (!starterEnv.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    starterEnv.GOOGLE_APPLICATION_CREDENTIALS = "solvoxai.json";
+  }
+  if (!starterEnv.GCS_SERVICE_ACCOUNT_JSON?.trim()) {
+    starterEnv.GCS_SERVICE_ACCOUNT_JSON = "livekit-storage.json";
+  }
+
+  const { env: credEnv, mounts } = resolveCredentialMounts(
+    dashboardRoot,
+    starter,
+    starterEnv,
+  );
+
+  if (existsSync(runtimePath)) {
+    const runtime = parseEnvFile(readFileSync(runtimePath, "utf8"));
+    for (const key of CREDENTIAL_KEYS) {
+      if (credEnv[key]) runtime[key] = credEnv[key];
+    }
+    writeFileSync(runtimePath, encodeEnvFile(runtime), "utf8");
+  }
+
+  const entrypoint =
+    (existsSync(runtimePath)
+      ? parseEnvFile(readFileSync(runtimePath, "utf8")).AGENT_ENTRYPOINT
+      : starterEnv.AGENT_ENTRYPOINT)?.trim() || "src/agent.py";
+  writeFileSync(overridePath, buildAgentComposeOverride(entrypoint, mounts), "utf8");
+
+  if (mounts.length === 0) {
+    console.warn(
+      "No Vertex/GCS credential files found to mount. Expected on the VPS:\n" +
+        `  ${path.join(starter, "solvoxai.json")}\n` +
+        `  ${path.join(starter, "livekit-storage.json")}`,
+    );
+  } else {
+    console.log(
+      `  Credential mounts: ${mounts.map((m) => `${m.host} → ${m.container}`).join(", ")}`,
+    );
+  }
+
+  return { mounts, starter };
 }
 
 export function resolveCredentialMounts(dashboardRoot, starterDir, env) {

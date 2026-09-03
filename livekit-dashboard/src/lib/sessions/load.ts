@@ -1,15 +1,11 @@
 import { prisma } from "@/lib/db";
 import { toLiveWebhookEvent } from "@/lib/events/types";
 import { getProjectLiveKitForWebhook, toEgressSnapshot, type ProjectLiveKit } from "@/lib/livekit";
-import { parseParticipantMeta, parseRoomMeta } from "@/lib/overview/payload";
+import { asRecord, parseParticipantMeta, parseRoomMeta } from "@/lib/overview/payload";
 import { labelFor, rangeWindow } from "@/lib/overview/series";
 import type { ChartPoint, OverviewRange } from "@/lib/overview/types";
-import {
-  mergeRecordings,
-  parseSessionTranscripts,
-  recordingsFromEgressInfo,
-  recordingsFromWebhooks,
-} from "@/lib/sessions/insights";
+import { mergeRecordings, parseSessionTranscripts, recordingsFromEgressInfo, recordingsFromWebhooks } from "@/lib/sessions/insights";
+import { identitiesFromRecordingOutputs } from "@/lib/sessions/recording-role";
 import { resolvePlayableUrl } from "@/lib/gcs";
 import { mergeEgressIntoSessions, reconstructSessions, sessionOverlapsRange } from "@/lib/sessions/reconstruct";
 import {
@@ -44,6 +40,56 @@ function toEvents(
       kind: participant.kind,
       at: row.createdAt.getTime(),
     };
+  });
+}
+
+function fileLocationsFromPayload(raw: unknown): { outputs: string[]; type: string | null } {
+  const root = asRecord(raw);
+  const info = asRecord(root?.egressInfo) ?? asRecord(root?.egress_info) ?? root;
+  if (!info) return { outputs: [], type: null };
+  const files = Array.isArray(info.fileResults)
+    ? info.fileResults
+    : Array.isArray(info.file_results)
+      ? info.file_results
+      : [];
+  const outputs: string[] = [];
+  for (const file of files) {
+    const rec = asRecord(file);
+    const location =
+      (typeof rec?.location === "string" && rec.location.trim()) ||
+      (typeof rec?.filename === "string" && rec.filename.trim()) ||
+      "";
+    if (location) outputs.push(location);
+  }
+  const type = typeof info.type === "string" ? info.type : null;
+  return { outputs, type };
+}
+
+function webhookEgressSeeds(
+  rows: { id?: string; roomName: string | null; createdAt?: Date; eventType?: string; rawPayload: unknown }[],
+) {
+  return rows.flatMap((row) => {
+    const roomName = row.roomName ?? parseRoomMeta(row.rawPayload).name;
+    if (!roomName) return [];
+    const { outputs, type } = fileLocationsFromPayload(row.rawPayload);
+    const root = asRecord(row.rawPayload);
+    const info = asRecord(root?.egressInfo) ?? asRecord(root?.egress_info);
+    const egressId =
+      (typeof info?.egressId === "string" && info.egressId) ||
+      (typeof info?.egress_id === "string" && info.egress_id) ||
+      row.id ||
+      roomName;
+    const at = row.createdAt?.toISOString() ?? null;
+    return [
+      {
+        id: egressId,
+        roomName,
+        startedAt: at,
+        endedAt: row.eventType === "egress_ended" ? at : null,
+        active: false,
+        identities: identitiesFromRecordingOutputs(outputs, type),
+      },
+    ];
   });
 }
 
@@ -96,7 +142,7 @@ export async function loadSessions(
         createdAt: { gte: new Date(queryStart) },
         eventType: { in: ["egress_started", "egress_updated", "egress_ended"] },
       },
-      select: { roomName: true, rawPayload: true },
+      select: { id: true, eventType: true, roomName: true, createdAt: true, rawPayload: true },
     }),
   ]);
 
@@ -118,7 +164,11 @@ export async function loadSessions(
   ]);
 
   const reconstructed = reconstructSessions(toEvents(rows), now, egressRooms);
-  const sessions = mergeEgressIntoSessions(reconstructed, liveJobs, now)
+  const sessions = mergeEgressIntoSessions(
+    reconstructed,
+    [...liveJobs, ...webhookEgressSeeds(egressRows)],
+    now,
+  )
     .filter((session) => sessionOverlapsRange(session, start, end, now))
     .slice(0, MAX_SESSIONS);
 

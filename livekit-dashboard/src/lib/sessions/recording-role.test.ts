@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mergeRecordings, recordingsFromWebhooks } from "@/lib/sessions/insights";
 import {
+  identitiesFromRecordingOutputs,
+  publisherIdentityFromOutput,
   recordingRoleFromOutput,
   recordingRoleLabel,
 } from "@/lib/sessions/recording-role";
@@ -28,6 +30,22 @@ describe("recordingRoleFromOutput", () => {
 
   it("maps our own published track to the agent", () => {
     expect(recordingRoleFromOutput(`${PREFIX}/agent-AJ_abc123-1750000000.ogg`)).toBe("agent");
+  });
+
+  it("extracts publisher identities for session reconstruction", () => {
+    expect(publisherIdentityFromOutput(`${PREFIX}/sip_918177938974-1750000000.ogg`)).toBe(
+      "sip_918177938974",
+    );
+    expect(
+      identitiesFromRecordingOutputs([
+        `${PREFIX}/sip_918177938974-1750000000.ogg`,
+        `${PREFIX}/agent-AJ_abc123-1750000000.ogg`,
+        `${PREFIX}/room1-mixed.ogg`,
+      ]),
+    ).toEqual([
+      { identity: "sip_918177938974", kind: "sip" },
+      { identity: "agent-AJ_abc123", kind: "agent" },
+    ]);
   });
 
   it("strips the ISO timestamp and track sid LiveKit appends", () => {

@@ -1,3 +1,4 @@
+import type { KindBucket } from "@/lib/overview/payload";
 import type { RecordingRole } from "@/lib/sessions/types";
 
 /** Suffix the room-composite (mixed) egress writes. Mirrors MIXED_RECORDING_SUFFIX in agent.py. */
@@ -57,4 +58,41 @@ export function recordingRoleFromOutput(
   if (identity.startsWith("sip")) return "prospect";
   if (identity.replace(/\D/g, "").length >= 10) return "prospect";
   return "agent";
+}
+
+export function publisherIdentityFromOutput(output: string | null | undefined): string | null {
+  if (!output) return null;
+  const stem = fileStem(output);
+  if (!stem || stem.endsWith(MIXED_RECORDING_SUFFIX)) return null;
+  const identity = publisherIdentity(stem).trim();
+  return identity || null;
+}
+
+export function participantKindFromOutput(
+  output: string,
+  type?: string | null,
+): KindBucket | null {
+  const role = recordingRoleFromOutput(output, type);
+  if (role === "mixed") return null;
+  if (role === "agent") return "agent";
+  const identity = (publisherIdentityFromOutput(output) ?? "").toLowerCase();
+  if (identity.startsWith("sip") || identity.replace(/\D/g, "").length >= 10) return "sip";
+  return "webrtc";
+}
+
+export type EgressIdentity = { identity: string; kind: KindBucket };
+
+export function identitiesFromRecordingOutputs(
+  outputs: Array<string | null | undefined>,
+  type?: string | null,
+): EgressIdentity[] {
+  const seen = new Map<string, KindBucket>();
+  for (const output of outputs) {
+    if (!output) continue;
+    const identity = publisherIdentityFromOutput(output);
+    const kind = participantKindFromOutput(output, type);
+    if (!identity || !kind) continue;
+    if (!seen.has(identity)) seen.set(identity, kind);
+  }
+  return [...seen.entries()].map(([identity, kind]) => ({ identity, kind }));
 }

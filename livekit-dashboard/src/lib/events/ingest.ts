@@ -3,7 +3,7 @@ import {
   getProjectLiveKitForWebhook,
   infraWebhookReceiver,
 } from "@/lib/livekit";
-import { resolveProjectIdForRoom } from "@/lib/events/attribution";
+import { registerProjectRoom, resolveProjectIdForRoom } from "@/lib/events/attribution";
 import { storeWebhookEvent } from "@/lib/events/store";
 
 export function stripBearer(header: string | null) {
@@ -46,9 +46,14 @@ async function ingestViaInfraKey(body: string, token: string) {
     return null;
   }
 
-  const projectId = await resolveProjectIdForRoom(event.room?.name ?? event.egressInfo?.roomName);
+  const roomName = event.room?.name ?? event.egressInfo?.roomName;
+  const projectId = await resolveProjectIdForRoom(roomName);
   if (!projectId) {
-    throw new Error(`no project owns room ${event.room?.name ?? "(unknown)"}`);
+    throw new Error(`no project owns room ${roomName ?? "(unknown)"}`);
+  }
+
+  if (roomName?.trim()) {
+    await registerProjectRoom(projectId, roomName);
   }
 
   await storeWebhookEvent(projectId, event, body);

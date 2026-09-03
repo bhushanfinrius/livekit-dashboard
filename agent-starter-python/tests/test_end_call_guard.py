@@ -16,6 +16,7 @@ from agent import (  # noqa: E402
     looks_like_continue_invite,
     looks_like_not_interested,
     should_end_as_no_answer,
+    uses_gemini_developer_api,
 )
 
 
@@ -154,6 +155,12 @@ def test_history_lines_from_session_report() -> None:
         ("agent", "Aarya", "Namaste, main Aarya bol rahi hoon."),
         ("user", "Prospect", "Haan, boliye."),
     ]
+
+
+def test_gemini_developer_api_detects_aiza_keys() -> None:
+    assert uses_gemini_developer_api("AIzaSyDummyKeyForTest") is True
+    assert uses_gemini_developer_api("") is False
+    assert uses_gemini_developer_api("vertex-sa-not-aiza") is False
 
 
 if __name__ == "__main__":

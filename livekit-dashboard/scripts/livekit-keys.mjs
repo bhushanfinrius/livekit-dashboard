@@ -30,7 +30,7 @@ import {
   saveKeyStore,
   upsertEnvLine,
 } from "./keys-lib.mjs";
-import { loadDotEnv, parseEnvFile } from "./vps-lib.mjs";
+import { applyHostDatabaseUrl, loadDotEnv, parseEnvFile } from "./vps-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -46,10 +46,7 @@ function flagValue(name, fallback = null) {
 }
 
 async function withPrisma(run) {
-  const env = loadDotEnv(ROOT);
-  if (!process.env.DATABASE_URL && env.DATABASE_URL) {
-    process.env.DATABASE_URL = env.DATABASE_URL;
-  }
+  applyHostDatabaseUrl(ROOT);
   const { PrismaClient } = await import("@prisma/client");
   const prisma = new PrismaClient();
   try {
@@ -140,14 +137,29 @@ async function show(store) {
  * The deployed agent worker holds one project's credentials in .agent.runtime.env.
  * Reassigning that project's key leaves the worker unable to connect until it is updated.
  */
-function syncAgentWorkerEnv(pair) {
-  const runtimeEnv = path.join(ROOT, ".agent.runtime.env");
-  if (!existsSync(runtimeEnv)) return false;
-  let content = readFileSync(runtimeEnv, "utf8");
+function starterEnvPath() {
+  const env = loadDotEnv(ROOT);
+  const raw = env.AGENT_BUILD_CONTEXT?.trim() || "../agent-starter-python";
+  const starter = path.isAbsolute(raw) ? raw : path.resolve(ROOT, raw);
+  return path.join(starter, ".env.local");
+}
+
+function patchKeyFile(filePath, pair) {
+  if (!existsSync(filePath)) return false;
+  let content = readFileSync(filePath, "utf8");
   content = upsertEnvLine(content, "LIVEKIT_API_KEY", pair.apiKey);
   content = upsertEnvLine(content, "LIVEKIT_API_SECRET", pair.apiSecret);
-  writeFileSync(runtimeEnv, content, "utf8");
+  const transcript = loadDotEnv(ROOT).DECK_TRANSCRIPT_SECRET?.trim();
+  if (transcript) content = upsertEnvLine(content, "DECK_TRANSCRIPT_SECRET", transcript);
+  writeFileSync(filePath, content, "utf8");
   return true;
+}
+
+/** The worker reads .agent.runtime.env and/or the starter .env.local — keep both current. */
+function syncAgentWorkerEnv(pair) {
+  const runtime = patchKeyFile(path.join(ROOT, ".agent.runtime.env"), pair);
+  const starter = patchKeyFile(starterEnvPath(), pair);
+  return runtime || starter;
 }
 
 /** Projects created before the pool hold the retired shared key, which no longer exists. */
@@ -166,6 +178,7 @@ async function reassign(store) {
     const staleExtras = extras.filter((row) => !valid.has(row.apiKey));
     if (staleProjects.length === 0 && staleExtras.length === 0) {
       console.log("  every project already holds a pool key — nothing to reassign");
+      await syncAgentFromProjects(store, prisma);
       return;
     }
 
@@ -204,13 +217,22 @@ async function reassign(store) {
     }
     console.log(`\n  reassigned ${needed} key(s)`);
 
-    if (staleProjects.length > 0 && syncAgentWorkerEnv(free[0])) {
-      console.log(
-        `  synced .agent.runtime.env to ${free[0].apiKey}\n` +
-          "  apply with: docker compose --profile agent up -d --force-recreate --no-deps agent",
-      );
-    }
+    await syncAgentFromProjects(store, prisma);
   });
+}
+
+async function syncAgentFromProjects(store, prisma) {
+  const project = await prisma.project.findFirst({
+    where: { livekitApiKey: { in: store.pool.map((pair) => pair.apiKey) } },
+    select: { livekitApiKey: true, name: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (!project) return;
+  const pair = store.pool.find((entry) => entry.apiKey === project.livekitApiKey);
+  if (!pair) return;
+  if (syncAgentWorkerEnv(pair)) {
+    console.log(`  synced agent env (${project.name}) → ${pair.apiKey}`);
+  }
 }
 
 async function main() {

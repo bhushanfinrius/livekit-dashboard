@@ -4,7 +4,8 @@
  *
  *   cp .env.vps.example .env
  *   # edit LIVEKIT_PUBLIC_IP, AUTH_SECRET, ENCRYPTION_KEY, AUTH_URL
- *   npm run docker:vps:up
+ * Prefer `npm run docker:vps:up` (scripts/vps-setup.mjs): keys, reassign, agent.
+ * This file only starts Compose after keys already exist.
  */
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";

@@ -45,6 +45,32 @@ export function loadDotEnv(dashboardRoot) {
   return parseEnvFile(readFileSync(file, "utf8"));
 }
 
+/**
+ * `.env` on the VPS uses hostname `postgres`, which only resolves inside Compose.
+ * Host-side scripts (livekit:keys --reassign) must hit the published port instead.
+ */
+export function hostDatabaseUrl(databaseUrl) {
+  const raw = (databaseUrl ?? "").trim();
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    if (url.hostname === "postgres" || url.hostname.endsWith("-postgres-1")) {
+      url.hostname = "127.0.0.1";
+      url.port = "5433";
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+export function applyHostDatabaseUrl(dashboardRoot) {
+  const fromEnv = process.env.DATABASE_URL || loadDotEnv(dashboardRoot).DATABASE_URL;
+  const next = hostDatabaseUrl(fromEnv);
+  if (next) process.env.DATABASE_URL = next;
+  return next;
+}
+
 function looksLikeFilePath(value) {
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith("{") || trimmed.startsWith("[")) return false;

@@ -172,3 +172,45 @@ def _async_return(value):
         return value
 
     return _inner
+
+
+def test_egress_unavailable_detects_livekit_503() -> None:
+    err = Exception(
+        "ServerError(code=unavailable, message=twirp error unknown: "
+        "no response from servers, status=503)"
+    )
+    assert agent._egress_unavailable(err) is True
+    assert agent._egress_unavailable(Exception("duplicate egress")) is False
+
+
+@pytest.mark.asyncio
+async def test_start_mixed_egress_retries_503_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(agent, "EGRESS_START_ATTEMPTS", 3)
+    monkeypatch.setattr(agent, "_mixed_egress_gate", asyncio.Semaphore(1))
+
+    class _Result:
+        egress_id = "EG_ok"
+
+    class _Egress:
+        calls = 0
+
+        async def start_room_composite_egress(self, _request):
+            self.calls += 1
+            if self.calls < 2:
+                raise RuntimeError("twirp error unknown: no response from servers, status=503")
+            return _Result()
+
+    shared = _Egress()
+
+    class _Api:
+        def __init__(self):
+            self.egress = shared
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(agent.api, "LiveKitAPI", lambda *_a, **_k: _Api())
+    monkeypatch.setattr(agent.asyncio, "sleep", _async_return(None))
+    egress_id = await agent.start_mixed_egress("camp-room", FAKE_CREDS)
+    assert egress_id == "EG_ok"
+    assert shared.calls == 2

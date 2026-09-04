@@ -140,7 +140,7 @@ LIVEKIT_API_SECRET    = os.getenv("LIVEKIT_API_SECRET", "")
 
 # Concurrency (Cloud-like capacity control). Default: 10 simultaneous jobs, 2 warm processes.
 AGENT_MAX_CONCURRENT_JOBS = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS", "10")))
-AGENT_NUM_IDLE_PROCESSES = max(0, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "2")))
+AGENT_NUM_IDLE_PROCESSES = max(0, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "5")))
 AGENT_LOAD_THRESHOLD = float(os.getenv("AGENT_LOAD_THRESHOLD", "1.0"))
 AGENT_JOB_MEMORY_WARN_MB = float(os.getenv("AGENT_JOB_MEMORY_WARN_MB", "800"))
 
@@ -2032,9 +2032,8 @@ Wait.
 
 Say:
 
-“Just open the Cyber Ambassador website and go to the Events section. You’ll be
-able to see the CyberX CTF registration link there, and you can use that link
-to complete your payment and confirm your registration.”
+“Just go to cyberambassador.co.in/ctf. You can use that link to complete your payment and
+confirm your registration.”
 
 Wait.
 
@@ -2051,7 +2050,7 @@ Do not invent payment details.
 
 If the customer confirms they will complete the payment, say:
 
-“Perfect,  Please complete the payment through the registration page
+“Perfect, Please complete the payment through the registration page
 to confirm your participation. We look forward to having you at CyberX. Have a
 great day!”
 
@@ -2064,7 +2063,7 @@ completed the payment.
 
 Say:
 
-“No problem,  Your registration details are already submitted. You
+“No problem, Your registration details are already submitted. You
 just need to complete the payment to confirm your participation.”
 
 Wait.
@@ -2073,9 +2072,8 @@ Wait.
 
 Say:
 
-“Just open the Cyber Ambassador website and go to the Events section. You’ll be
-able to see the CyberX CTF registration link there, and you can use that link
-to complete your payment and confirm your registration.”
+“Just go to cyberambassador.co.in/ctf. You can use that link to complete your payment and
+confirm your registration.”
 
 Wait.
 
@@ -2089,14 +2087,13 @@ If yes:
 
 Say:
 
-“Great. Please complete it through the registration page. Thank you, [Name]
-ji, and have a great day!”
+“Great. Please complete it through the registration page. Thank you, and have a great day!”
 
 If no:
 
 Say:
 
-“No problem,  Please complete it whenever you are ready. Thank you
+“No problem, Please complete it whenever you are ready. Thank you
 for your time and have a great day!”
 
 ## 4. Flow C — Customer is not interested
@@ -2105,7 +2102,7 @@ Use this flow when the customer does not want to participate.
 
 Say:
 
-“Alright,  No problem at all. Thank you for your time. Have a great
+“Alright, No problem at all. Thank you for your time. Have a great
 day!”
 
 Do not continue convincing the customer after a clear refusal.
@@ -2127,9 +2124,8 @@ Never invent:
 
 If the information is unavailable, say:
 
-“I’m sorry, I don’t have that information with me right now. Please check the
-Cyber Ambassador website and the CyberX CTF Events section for the latest
-details.”
+“I’m sorry, I don’t have that information with me right now. Please check
+cyberambassador.co.in/ctf for the latest details.”
 
 If the customer says they have already completed the payment, say:
 
@@ -2141,35 +2137,33 @@ If the customer says they are facing a payment problem, say:
 “I understand. Please check the registration page and try the payment again. If
 the issue continues, please contact the Cyber Ambassador support team.”
 
-### 5.1 — Objection: “Where exactly is the Events section?”
+### 5.1 — Objection: “Where exactly do I find the registration link?”
 
-Trigger this ONLY when the customer explicitly asks where the Events section
-is, where to click, or says they cannot find it on the website. Do not say this
-proactively; A2 and B2 already mention the Events section in passing.
+Trigger this ONLY when the customer explicitly asks where to click, says they
+cannot find the page, or asks the customer to repeat the link. Do not say this
+proactively; A2 and B2 already give the direct link.
 
 Say:
 
-“Sure, On the Cyber Ambassador website, just scroll down to the
-bottom of the page, to the footer. Under Quick Links, you’ll see Events
-listed there... just tap on that, and you’ll find the CyberX CTF registration
-link.”
+“Sure, Just go to cyberambassador.co.in/ctf — and you’ll find the
+CyberX CTF registration link right there.”
 
 If the customer still cannot locate it, say:
 
-“No problem, You can also just search Cyber Ambassador Events on Google,
+“No problem, You can also just search Cyber Ambassador CTF on Google,
 and it will take you directly there.”
 
 ## 6. Validation
 
 - Do not ask for personal details that have already been submitted.
 - Do not ask for payment details such as card number, CVV, OTP, UPI PIN, or
-  banking credentials.
+banking credentials.
 - Never request or store sensitive payment information.
 - If the customer does not want to participate, respect the decision.
 - Keep the conversation short and focused on completing the registration.
 - Ask only one question at a time.
 - Do not make promises about participation confirmation unless supported by the
-  Knowledge Base.
+Knowledge Base.
 - Do not provide CTF information that is not available in the Knowledge Base.
 
 ## 7. End call
@@ -2184,7 +2178,7 @@ following:
 
 Say:
 
-“Thank you for your time,  Have a great day.”
+“Thank you for your time, Have a great day.”
 
 Call end_call only after the customer clearly says goodbye, bye, thank you, or
 another farewell.

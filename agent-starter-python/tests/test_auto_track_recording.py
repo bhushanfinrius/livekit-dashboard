@@ -120,11 +120,45 @@ class _CampRoom:
         creation_time: int,
         num_participants: int = 1,
         creation_time_ms: int = 0,
+        metadata: str = "",
     ) -> None:
         self.name = name
         self.creation_time = creation_time
         self.creation_time_ms = creation_time_ms
         self.num_participants = num_participants
+        self.metadata = metadata
+
+
+def test_campaign_allows_three_distinct_phone_numbers_at_once() -> None:
+    rooms = [
+        _CampRoom(
+            "camp-1bff08c5-2af6ae71-aaaaaa111111",
+            1,
+            metadata='{"lead_id":"2af6ae71-aaa","contact_number":"+918668641761"}',
+        ),
+        _CampRoom(
+            "camp-1bff08c5-b79e3590-bbbbbb222222",
+            2,
+            metadata='{"lead_id":"b79e3590-bbb","contact_number":"+919371099207"}',
+        ),
+        _CampRoom(
+            "camp-1bff08c5-532390a8-cccccc333333",
+            3,
+            metadata='{"lead_id":"532390a8-ccc","contact_number":"+918177938974"}',
+        ),
+    ]
+    assert (
+        campaign_room_allowed_from_list("camp-1bff08c5-2af6ae71-aaaaaa111111", rooms)
+        is True
+    )
+    assert (
+        campaign_room_allowed_from_list("camp-1bff08c5-b79e3590-bbbbbb222222", rooms)
+        is True
+    )
+    assert (
+        campaign_room_allowed_from_list("camp-1bff08c5-532390a8-cccccc333333", rooms)
+        is True
+    )
 
 
 def test_campaign_allows_three_distinct_leads_and_drops_same_lead_dupes() -> None:

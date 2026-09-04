@@ -27,6 +27,7 @@ import logging
 import asyncio
 import os
 import re
+import sys
 import json
 import time
 import tempfile
@@ -43,6 +44,7 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
+    JobExecutorType,
     cli,
     room_io,
     get_job_context,
@@ -154,7 +156,7 @@ LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
 
 # Concurrency (Cloud-like capacity control). Default: 10 simultaneous jobs, 2 warm processes.
 AGENT_MAX_CONCURRENT_JOBS = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS", "10")))
-AGENT_NUM_IDLE_PROCESSES = max(0, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "5")))
+AGENT_NUM_IDLE_PROCESSES = max(3, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "5")))
 AGENT_LOAD_THRESHOLD = float(os.getenv("AGENT_LOAD_THRESHOLD", "1.0"))
 AGENT_JOB_MEMORY_WARN_MB = float(os.getenv("AGENT_JOB_MEMORY_WARN_MB", "800"))
 # Solvox camp-{campaign8}-{lead8}-* rooms. Frontend owns concurrency.
@@ -660,6 +662,53 @@ def _campaign_created_at(room) -> int:
     return int(sec) * 1000
 
 
+def _parse_meta(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    try:
+        data = json.loads(raw or "")
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _phone_digits(value: str) -> str:
+    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def campaign_slot_key(
+    room_name: str,
+    *,
+    lead_id: str = "",
+    contact_number: str = "",
+    metadata: str = "",
+) -> Optional[tuple]:
+    """One concurrent slot per phone number (preferred) or lead, never per extra room suffix."""
+    parsed = campaign_lead_key(room_name)
+    if parsed is None:
+        return None
+    meta = _parse_meta(metadata)
+    phone = _phone_digits(contact_number) or _phone_digits(str(meta.get("contact_number") or ""))
+    if phone:
+        return ("phone", phone)
+    lid = (lead_id or str(meta.get("lead_id") or "")).replace("-", "").strip()[:8].lower()
+    if lid:
+        return ("lead", parsed[0], lid)
+    return ("lead", parsed[0], parsed[1])
+
+
+def campaign_room_slot(room, lead_id: str = "", contact_number: str = "") -> Optional[tuple]:
+    name = getattr(room, "name", "") or ""
+    meta = _parse_meta(getattr(room, "metadata", "") or "")
+    return campaign_slot_key(
+        name,
+        lead_id=lead_id or str(meta.get("lead_id") or ""),
+        contact_number=contact_number or str(meta.get("contact_number") or ""),
+        metadata=getattr(room, "metadata", "") or "",
+    )
+
+
 def campaign_room_allowed_from_list(
     room_name: str,
     rooms,
@@ -667,21 +716,21 @@ def campaign_room_allowed_from_list(
     lead_id: str = "",
     now_ms: Optional[int] = None,
     stale_empty_ms: int = 60_000,
+    contact_number: str = "",
 ) -> bool:
-    """Keep the newest room for this lead. Never block test/Talk or a new lead.
-
-    `cap` is unused: Solvox frontend owns how many leads are dialed.
-    """
+    """Keep the newest room for this phone/lead. Other numbers run at the same time."""
     del cap, stale_empty_ms
-    key = campaign_lead_key(room_name, lead_id)
+    current = next((room for room in rooms if getattr(room, "name", "") == room_name), None)
+    if current is not None:
+        key = campaign_room_slot(current, lead_id, contact_number)
+    else:
+        key = campaign_slot_key(
+            room_name, lead_id=lead_id, contact_number=contact_number
+        )
     if key is None:
         return True
     clock = int(time.time() * 1000) if now_ms is None else now_ms
-    same = [
-        room
-        for room in rooms
-        if campaign_lead_key(getattr(room, "name", "")) == key
-    ]
+    same = [room for room in rooms if campaign_room_slot(room) == key]
     if not any(getattr(room, "name", "") == room_name for room in same):
         same.append(
             type(
@@ -692,6 +741,9 @@ def campaign_room_allowed_from_list(
                     "creation_time": clock / 1000,
                     "creation_time_ms": clock,
                     "num_participants": 1,
+                    "metadata": json.dumps(
+                        {"lead_id": lead_id, "contact_number": contact_number}
+                    ),
                 },
             )()
         )
@@ -713,7 +765,9 @@ async def _list_live_rooms():
         await lkapi.aclose()
 
 
-async def campaign_room_allowed(room_name: str, lead_id: str = "") -> bool:
+async def campaign_room_allowed(
+    room_name: str, lead_id: str = "", contact_number: str = ""
+) -> bool:
     if campaign_lead_key(room_name, lead_id) is None:
         return True
     try:
@@ -721,7 +775,18 @@ async def campaign_room_allowed(room_name: str, lead_id: str = "") -> bool:
     except Exception as exc:
         logger.warning("Could not list rooms for campaign cap: %s", exc)
         return True
-    return campaign_room_allowed_from_list(room_name, rooms, lead_id=lead_id)
+    allowed = campaign_room_allowed_from_list(
+        room_name, rooms, lead_id=lead_id, contact_number=contact_number
+    )
+    logger.info(
+        "[%s] Campaign slot allowed=%s lead=%s contact=%s live_rooms=%s",
+        room_name,
+        allowed,
+        (lead_id or "")[:8],
+        _phone_digits(contact_number) or "-",
+        len(rooms),
+    )
+    return allowed
 
 
 async def _delete_extra_campaign_room(room_name: str) -> None:
@@ -2880,6 +2945,12 @@ async def _run_outbound_call_setup(
             return
 
         logger.info(f"[{state.room_name}] SIP participant joined: {sip_identity}")
+        if not state.connected:
+            state.connected = True
+            state.connected_at = datetime.datetime.now(datetime.timezone.utc)
+            asyncio.create_task(
+                send_webhook({"event": "call_connected", **state.webhook_base()})
+            )
         await _greet_prospect(session, state)
         if VOICEMAIL_DETECTION_ENABLED:
             logger.info(
@@ -2907,9 +2978,13 @@ def _agent_load(agent_server: AgentServer) -> float:
 
 
 server = AgentServer(
+    job_executor_type=(
+        JobExecutorType.THREAD
+        if sys.platform.startswith("win")
+        else JobExecutorType.PROCESS
+    ),
     load_threshold=AGENT_LOAD_THRESHOLD,
     load_fnc=_agent_load,
-    # Prod SDK default is 20 idle processes — too heavy for typical VPS. Keep 1–2 warm.
     num_idle_processes=AGENT_NUM_IDLE_PROCESSES,
     job_memory_warn_mb=AGENT_JOB_MEMORY_WARN_MB,
 )
@@ -2946,7 +3021,9 @@ async def entrypoint(ctx: JobContext):
     )
 
     state = CallState(ctx)
-    if not await campaign_room_allowed(state.room_name, state.lead_id):
+    if not await campaign_room_allowed(
+        state.room_name, state.lead_id, state.contact_number
+    ):
         logger.warning(
             "[%s] Extra room for this lead — keeping the newest attempt so the phone rings once",
             state.room_name,

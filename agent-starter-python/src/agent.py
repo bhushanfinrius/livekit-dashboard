@@ -56,6 +56,7 @@ from livekit.agents import (
     RunContext,
 )
 from livekit.plugins import google
+from google.genai import types as genai_types
 import chromadb
 
 logger = logging.getLogger("CTF-Agent")
@@ -2709,18 +2710,27 @@ async def setup_rag(session: AgentSession):
 
 # ════════════════════════════════════════════════════════════════════════════════
 # GREETING
-# Gemini Live already opens from CALL_FLOW ("Say only: Hello"). Do not call
-# generate_reply here — the plugin then logs "no active generation" and
-# "generate_reply timed out waiting for generation_created" while Hello already played.
+# Gemini Live 2.5 does not speak CALL_FLOW until something starts a turn.
+# Outbound callees wait for the caller — if we never generate_reply, the line
+# stays silent (145s, 0 turns). Call this only AFTER SIP has joined.
+# Do not use session.say() on Gemini Live.
 # ════════════════════════════════════════════════════════════════════════════════
+_OPENING_REPLY = "Say only: Hello"
+
+
 async def _greet_prospect(session: AgentSession, state: CallState) -> None:
     async with state._greeting_lock:
         if state._greeting_sent:
             return
         state._greeting_sent = True
-        logger.info(
-            f"[{state.room_name}] Greeting owned by CALL_FLOW — not calling generate_reply"
-        )
+        await asyncio.sleep(0.8)
+        if state._call_end_handled:
+            return
+        logger.info("[%s] Starting CALL_FLOW opening with generate_reply", state.room_name)
+        try:
+            session.generate_reply(instructions=_OPENING_REPLY)
+        except Exception as exc:
+            logger.warning("[%s] Opening generate_reply failed: %s", state.room_name, exc)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -3050,6 +3060,8 @@ async def entrypoint(ctx: JobContext):
                     vertexai=True,
                     project=GOOGLE_CLOUD_PROJECT,
                     location=GOOGLE_CLOUD_LOCATION,
+                    input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+                    output_audio_transcription=genai_types.AudioTranscriptionConfig(),
                     instructions="""
                     Speak only in natural Indian English accent.
                     Never use an American accent.

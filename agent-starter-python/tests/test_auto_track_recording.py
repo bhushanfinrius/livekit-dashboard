@@ -14,6 +14,7 @@ from agent import (  # noqa: E402
     _publisher_identity_from_object_path,
     _recording_role_for_object_path,
     build_room_egress,
+    campaign_room_allowed_from_list,
     ensure_room_recording,
 )
 
@@ -106,6 +107,33 @@ def test_build_room_egress_has_mixed_and_tracks() -> None:
     assert "{publisher_identity}" in egress.tracks.filepath
 
 
+def test_build_room_egress_campaign_tracks_only() -> None:
+    egress = build_room_egress(FAKE_CREDS, "camp-17400407-bb225e9e-aa88d4981169")
+    assert not egress.HasField("room")
+    assert egress.HasField("tracks")
+
+
+def test_campaign_room_allowed_keeps_oldest_three() -> None:
+    class _Room:
+        def __init__(self, name: str, creation_time: int) -> None:
+            self.name = name
+            self.creation_time = creation_time
+            self.creation_time_ms = 0
+
+    rooms = [
+        _Room("camp-lead-a-1", 1),
+        _Room("camp-lead-a-2", 2),
+        _Room("camp-lead-b-1", 3),
+        _Room("camp-lead-b-2", 4),
+        _Room("camp-lead-c-1", 5),
+    ]
+    assert campaign_room_allowed_from_list("camp-lead-a-1", rooms, cap=3) is True
+    assert campaign_room_allowed_from_list("camp-lead-b-1", rooms, cap=3) is True
+    assert campaign_room_allowed_from_list("camp-lead-b-2", rooms, cap=3) is False
+    assert campaign_room_allowed_from_list("camp-new-lead", rooms, cap=3) is False
+    assert campaign_room_allowed_from_list("deck-console-abc", rooms, cap=3) is True
+
+
 def test_mixed_filepath_is_templated_without_room() -> None:
     assert "{room_name}" in _mixed_egress_filepath()
     assert _mixed_egress_filepath("room1").endswith("/room1/room1-mixed.ogg")
@@ -135,6 +163,16 @@ def patched_livekit(monkeypatch):
     return room_service
 
 
+def test_ensure_room_recording_campaign_skips_mixed(
+    monkeypatch, patched_livekit
+) -> None:
+    monkeypatch.setattr(agent, "_list_room_egress", _async_return(["job-1"]))
+    asyncio.run(ensure_room_recording("camp-lead-1"))
+    egress = patched_livekit.requests[0].egress
+    assert not egress.HasField("room")
+    assert egress.HasField("tracks")
+
+
 def test_ensure_room_recording_skips_fallback_when_egress_attached(
     monkeypatch, patched_livekit
 ) -> None:
@@ -162,7 +200,9 @@ def test_ensure_room_recording_disabled_by_config(monkeypatch, patched_livekit) 
     assert patched_livekit.requests == []
 
 
-def test_ensure_room_recording_without_credentials(monkeypatch, patched_livekit) -> None:
+def test_ensure_room_recording_without_credentials(
+    monkeypatch, patched_livekit
+) -> None:
     monkeypatch.setattr(agent, "_load_gcs_creds_json", lambda room_name: None)
     assert asyncio.run(ensure_room_recording("room1")) == (False, False)
 
@@ -184,21 +224,20 @@ def test_egress_unavailable_detects_livekit_503() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_mixed_egress_retries_503_then_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr(agent, "EGRESS_START_ATTEMPTS", 3)
+async def test_start_mixed_egress_trips_circuit_on_503(monkeypatch, tmp_path) -> None:
+    circuit = tmp_path / "egress-circuit"
+    monkeypatch.setattr(agent, "EGRESS_CIRCUIT_PATH", str(circuit))
+    monkeypatch.setattr(agent, "EGRESS_CIRCUIT_SECONDS", 90)
     monkeypatch.setattr(agent, "_mixed_egress_gate", asyncio.Semaphore(1))
-
-    class _Result:
-        egress_id = "EG_ok"
 
     class _Egress:
         calls = 0
 
         async def start_room_composite_egress(self, _request):
             self.calls += 1
-            if self.calls < 2:
-                raise RuntimeError("twirp error unknown: no response from servers, status=503")
-            return _Result()
+            raise RuntimeError(
+                "twirp error unknown: no response from servers, status=503"
+            )
 
     shared = _Egress()
 
@@ -210,7 +249,9 @@ async def test_start_mixed_egress_retries_503_then_succeeds(monkeypatch) -> None
             return None
 
     monkeypatch.setattr(agent.api, "LiveKitAPI", lambda *_a, **_k: _Api())
-    monkeypatch.setattr(agent.asyncio, "sleep", _async_return(None))
-    egress_id = await agent.start_mixed_egress("camp-room", FAKE_CREDS)
-    assert egress_id == "EG_ok"
-    assert shared.calls == 2
+    first = await agent.start_mixed_egress("camp-room", FAKE_CREDS)
+    second = await agent.start_mixed_egress("camp-room-2", FAKE_CREDS)
+    assert first is None
+    assert second is None
+    assert shared.calls == 1
+    assert agent._egress_circuit_open() is True

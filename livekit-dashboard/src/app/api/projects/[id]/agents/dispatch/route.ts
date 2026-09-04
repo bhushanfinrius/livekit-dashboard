@@ -5,7 +5,7 @@ import {
   requireProjectLiveKit,
 } from "@/lib/api/project";
 import { toAgentDispatchSnapshot } from "@/lib/livekit";
-import { ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
+import { campaignConcurrencyError, ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
 import { agentDispatchSchema, deleteDispatchSchema } from "@/lib/validators/sip";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +27,8 @@ export async function POST(request: Request, context: RouteContext) {
   if (access.error) return access.error;
 
   try {
+    const busy = await campaignConcurrencyError(access.livekit, parsed.data.roomName);
+    if (busy) return jsonError(busy, 429, "BUSY");
     const roomResult = await ensureRoomWithAutoTrackEgress(
       access.livekit,
       parsed.data.roomName,

@@ -52,7 +52,12 @@ export async function POST(request: Request, context: RouteContext) {
       metadata: parsed.data.metadata,
       roomConfig: recordingError
         ? undefined
-        : new RoomConfiguration({ egress: roomEgressConfig(parsed.data.agentName) }),
+        : new RoomConfiguration({
+            egress: roomEgressConfig(
+              parsed.data.agentName,
+              parsed.data.roomName ?? parsed.data.roomPrefix,
+            ),
+          }),
     });
 
     // Inbound rooms are named by LiveKit, so claim the namespace to attribute webhooks.

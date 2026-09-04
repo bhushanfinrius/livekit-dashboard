@@ -1,4 +1,5 @@
 import type { KindBucket } from "@/lib/overview/payload";
+import { canonicalParticipantKey, kindFromIdentity } from "@/lib/overview/payload";
 import type { SessionEvent, SessionFeature, SessionParticipant, SessionSnapshot } from "@/lib/sessions/types";
 
 const JOIN = "participant_joined";
@@ -122,24 +123,35 @@ function closeDraft(draft: Draft, at: number) {
   draft.present.clear();
 }
 
+function resolvedKind(identity: string, kind: KindBucket): KindBucket {
+  const fromId = kindFromIdentity(identity);
+  if (fromId === "sip" || fromId === "agent") return fromId;
+  return kind;
+}
+
 function markJoin(draft: Draft, identity: string, kind: KindBucket, at: number) {
-  const existing = draft.participants.get(identity);
+  if (kindFromIdentity(identity) === "infra") return;
+  const key = canonicalParticipantKey(identity);
+  const resolved = resolvedKind(identity, kind);
+  const existing = draft.participants.get(key);
   if (!existing) {
-    draft.participants.set(identity, { identity, kind, joinedAt: at, leftAt: null });
-  } else if (existing.leftAt !== null) {
-    existing.leftAt = null;
+    draft.participants.set(key, { identity, kind: resolved, joinedAt: at, leftAt: null });
+  } else {
+    if (existing.leftAt !== null) existing.leftAt = null;
+    if (resolved !== "webrtc") existing.kind = resolved;
   }
 
-  if (!draft.present.has(identity)) {
-    draft.present.add(identity);
+  if (!draft.present.has(key)) {
+    draft.present.add(key);
     draft.peak = Math.max(draft.peak, draft.present.size);
   }
 }
 
 function markLeave(draft: Draft, identity: string, at: number) {
-  const existing = draft.participants.get(identity);
+  const key = canonicalParticipantKey(identity);
+  const existing = draft.participants.get(key);
   if (existing && existing.leftAt === null) existing.leftAt = at;
-  draft.present.delete(identity);
+  draft.present.delete(key);
 }
 
 export function reconstructSessions(
@@ -199,6 +211,7 @@ export function reconstructSessions(
 
     if (event.eventType === JOIN) {
       if (!event.participantIdentity) continue;
+      if (kindFromIdentity(event.participantIdentity) === "infra") continue;
       const draft = ensureOpen(event);
       if (draft) markJoin(draft, event.participantIdentity, event.kind, event.at);
       continue;

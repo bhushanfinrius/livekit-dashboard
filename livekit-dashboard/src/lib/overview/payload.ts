@@ -5,17 +5,85 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-export function normalizeKind(value: unknown): KindBucket {
-  const raw =
-    typeof value === "number"
-      ? String(value)
-      : typeof value === "string"
-        ? value.trim().toLowerCase()
-        : "";
+function kindToken(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value.trim().toLowerCase().replace(/^participant_kind_/, "");
+  return "";
+}
 
-  if (raw === "3" || raw === "sip") return "sip";
-  if (raw === "4" || raw === "agent") return "agent";
-  return "webrtc";
+/** Recorders / bridges join the room but are not people on the call. */
+export function isInfraKind(value: unknown): boolean {
+  const raw = kindToken(value);
+  return (
+    raw === "1" ||
+    raw === "2" ||
+    raw === "7" ||
+    raw === "8" ||
+    raw === "ingress" ||
+    raw === "egress" ||
+    raw === "connector" ||
+    raw === "bridge"
+  );
+}
+
+export function looksLikePhoneIdentity(identity: string): boolean {
+  const digits = identity.replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+export function kindFromIdentity(identity: string | null | undefined): KindBucket | "infra" | null {
+  if (!identity?.trim()) return null;
+  const id = identity.trim();
+  const lower = id.toLowerCase();
+  if (
+    /^eg_/i.test(id) ||
+    /^ing_/i.test(id) ||
+    lower.startsWith("egress") ||
+    lower.startsWith("ingress")
+  ) {
+    return "infra";
+  }
+  if (lower.startsWith("sip") || lower.startsWith("caller") || looksLikePhoneIdentity(id)) {
+    return "sip";
+  }
+  if (lower.startsWith("agent") || lower.includes("agent-") || /^ctf-agent\b/i.test(id)) {
+    return "agent";
+  }
+  return null;
+}
+
+export function canonicalParticipantKey(identity: string): string {
+  const classified = kindFromIdentity(identity);
+  if (classified === "sip") {
+    const digits = identity.replace(/\D/g, "");
+    if (digits.length >= 10) return `sip:${digits.slice(-10)}`;
+  }
+  return identity.trim().toLowerCase();
+}
+
+export function classifyParticipant(input: {
+  kindRaw?: unknown;
+  identity?: string | null;
+  sip?: { phone?: string | null; callId?: string | null; trunkId?: string | null };
+}): { kind: KindBucket; infra: boolean } {
+  const identity = input.identity?.trim() || null;
+  if (isInfraKind(input.kindRaw) || kindFromIdentity(identity) === "infra") {
+    return { kind: "webrtc", infra: true };
+  }
+
+  const fromId = kindFromIdentity(identity);
+  const fromKind = kindToken(input.kindRaw);
+  if (fromKind === "3" || fromKind === "sip" || fromId === "sip" || input.sip?.phone || input.sip?.callId) {
+    return { kind: "sip", infra: false };
+  }
+  if (fromKind === "4" || fromKind === "agent" || fromId === "agent") {
+    return { kind: "agent", infra: false };
+  }
+  return { kind: "webrtc", infra: false };
+}
+
+export function normalizeKind(value: unknown): KindBucket {
+  return classifyParticipant({ kindRaw: value }).kind;
 }
 
 export function kindLabel(kind: KindBucket) {
@@ -53,15 +121,23 @@ export function parseParticipantMeta(rawPayload: unknown) {
   const regionRaw = participant?.region;
   const region =
     typeof regionRaw === "string" && regionRaw.trim() ? regionRaw.trim() : null;
+  const identity =
+    typeof participant?.identity === "string" && participant.identity.trim()
+      ? participant.identity.trim()
+      : null;
+  const sip = parseSipAttributes(participant);
+  const classified = classifyParticipant({
+    kindRaw: participant?.kind,
+    identity,
+    sip,
+  });
 
   return {
-    kind: normalizeKind(participant?.kind),
+    kind: classified.kind,
+    infra: classified.infra,
     region,
-    identity:
-      typeof participant?.identity === "string" && participant.identity.trim()
-        ? participant.identity.trim()
-        : null,
-    sip: parseSipAttributes(participant),
+    identity,
+    sip,
   };
 }
 

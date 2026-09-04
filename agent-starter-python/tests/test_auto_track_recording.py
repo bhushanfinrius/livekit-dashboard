@@ -113,25 +113,120 @@ def test_build_room_egress_campaign_tracks_only() -> None:
     assert egress.HasField("tracks")
 
 
-def test_campaign_room_allowed_keeps_oldest_three() -> None:
-    class _Room:
-        def __init__(self, name: str, creation_time: int) -> None:
-            self.name = name
-            self.creation_time = creation_time
-            self.creation_time_ms = 0
+class _CampRoom:
+    def __init__(
+        self,
+        name: str,
+        creation_time: int,
+        num_participants: int = 1,
+        creation_time_ms: int = 0,
+    ) -> None:
+        self.name = name
+        self.creation_time = creation_time
+        self.creation_time_ms = creation_time_ms
+        self.num_participants = num_participants
 
+
+def test_campaign_allows_three_distinct_leads_and_drops_same_lead_dupes() -> None:
+    """Solvox opens 3 rooms per lead. Only extra rooms for the same lead are dropped."""
     rooms = [
-        _Room("camp-lead-a-1", 1),
-        _Room("camp-lead-a-2", 2),
-        _Room("camp-lead-b-1", 3),
-        _Room("camp-lead-b-2", 4),
-        _Room("camp-lead-c-1", 5),
+        _CampRoom("camp-17400407-bb225e9e-aaaaaa111111", 1),
+        _CampRoom("camp-17400407-bb225e9e-bbbbbb222222", 2),
+        _CampRoom("camp-17400407-bb225e9e-cccccc333333", 3),
+        _CampRoom("camp-17400407-0911723d-dddddd444444", 4),
+        _CampRoom("camp-17400407-5b78f8f0-eeeeee555555", 5),
     ]
-    assert campaign_room_allowed_from_list("camp-lead-a-1", rooms, cap=3) is True
-    assert campaign_room_allowed_from_list("camp-lead-b-1", rooms, cap=3) is True
-    assert campaign_room_allowed_from_list("camp-lead-b-2", rooms, cap=3) is False
-    assert campaign_room_allowed_from_list("camp-new-lead", rooms, cap=3) is False
-    assert campaign_room_allowed_from_list("deck-console-abc", rooms, cap=3) is True
+    assert (
+        campaign_room_allowed_from_list("camp-17400407-bb225e9e-cccccc333333", rooms)
+        is True
+    )
+    assert (
+        campaign_room_allowed_from_list("camp-17400407-bb225e9e-aaaaaa111111", rooms)
+        is False
+    )
+    assert (
+        campaign_room_allowed_from_list("camp-17400407-0911723d-dddddd444444", rooms)
+        is True
+    )
+    assert (
+        campaign_room_allowed_from_list("camp-17400407-5b78f8f0-eeeeee555555", rooms)
+        is True
+    )
+    assert campaign_room_allowed_from_list("deck-console-abc", rooms) is True
+
+
+def test_campaign_allows_fourth_lead_so_leftovers_cannot_kill_new_calls() -> None:
+    rooms = [
+        _CampRoom("camp-17400407-11111111-aaaaaa111111", 1),
+        _CampRoom("camp-17400407-22222222-bbbbbb222222", 2),
+        _CampRoom("camp-17400407-33333333-cccccc333333", 3),
+        _CampRoom("camp-17400407-44444444-dddddd444444", 4),
+    ]
+    assert (
+        campaign_room_allowed_from_list("camp-17400407-44444444-dddddd444444", rooms)
+        is True
+    )
+
+
+def test_campaign_never_blocks_solvox_test_rooms() -> None:
+    """A Solvox test call must ring even if 3 campaign rooms are already live."""
+    rooms = [
+        _CampRoom("camp-17400407-11111111-aaaaaa111111", 1),
+        _CampRoom("camp-17400407-22222222-bbbbbb222222", 2),
+        _CampRoom("camp-17400407-33333333-cccccc333333", 3),
+        _CampRoom("test-2e551bbd-20260904_125110_466836", 4),
+    ]
+    assert (
+        campaign_room_allowed_from_list(
+            "test-2e551bbd-20260904_125110_466836", rooms
+        )
+        is True
+    )
+
+
+def test_campaign_ignores_stale_empty_rooms_and_other_campaigns() -> None:
+    now_ms = 200_000
+    rooms = [
+        _CampRoom(
+            "camp-aaaaaaaa-11111111-oldold111111",
+            creation_time=1,
+            num_participants=0,
+            creation_time_ms=1,
+        ),
+        _CampRoom(
+            "camp-17400407-11111111-stale1111111",
+            creation_time=1,
+            num_participants=0,
+            creation_time_ms=1,
+        ),
+        _CampRoom(
+            "camp-17400407-22222222-stale2222222",
+            creation_time=1,
+            num_participants=0,
+            creation_time_ms=1,
+        ),
+        _CampRoom(
+            "camp-17400407-33333333-stale3333333",
+            creation_time=1,
+            num_participants=0,
+            creation_time_ms=1,
+        ),
+        _CampRoom("test-2e551bbd-20260904_125110_466836", 1),
+        _CampRoom(
+            "camp-17400407-0911723d-fresh5555555",
+            creation_time=199,
+            num_participants=1,
+            creation_time_ms=199_000,
+        ),
+    ]
+    assert (
+        campaign_room_allowed_from_list(
+            "camp-17400407-0911723d-fresh5555555",
+            rooms,
+            now_ms=now_ms,
+        )
+        is True
+    )
 
 
 def test_mixed_filepath_is_templated_without_room() -> None:

@@ -12,10 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from agent import (  # noqa: E402
     END_CALL_MIN_CONV_SECONDS,
     END_CALL_MIN_TURNS,
-    _agent_already_said_hello,
     _greet_prospect,
-    _session_has_tts,
-    _speak_opening_hello,
     end_call_allowed,
     history_lines_from_report,
     looks_like_busy_callback,
@@ -213,96 +210,50 @@ def test_history_lines_from_session_report() -> None:
 
 
 def test_agent_hello_detection_ignores_prospect() -> None:
+    from agent import _last_prospect_utterance
+
     state = FakeState(transcript_parts=["Prospect: Hello.", "Aarya: This is Aarya calling."])
-    assert _agent_already_said_hello(state) is False
-    state.transcript_parts.append("Aarya: Hello.")
-    assert _agent_already_said_hello(state) is True
-
-
-def test_session_without_tts_does_not_claim_say() -> None:
-    class NoTts:
-        tts = None
-
-        def say(self, text):
-            raise RuntimeError("should not be called")
-
-    class WithTts:
-        tts = object()
-
-    assert _session_has_tts(NoTts()) is False
-    assert _session_has_tts(WithTts()) is True
+    assert _last_prospect_utterance(state) == "Hello."
+    assert looks_like_continue_invite("Hello") is True
 
 
 @pytest.mark.asyncio
-async def test_speak_opening_hello_skips_generate_reply_without_tts() -> None:
-    class FakeSession:
-        tts = None
-        say_calls = 0
-        reply_calls = 0
-
-        def say(self, text):
-            self.say_calls += 1
-            raise RuntimeError("say() must not run on Gemini Live")
-
-        def generate_reply(self, instructions=None):
-            self.reply_calls += 1
-            raise AssertionError("generate_reply must not run on Gemini Live")
-
-    session = FakeSession()
-    await _speak_opening_hello(session)
-    assert session.say_calls == 0
-    assert session.reply_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_greet_skips_when_gemini_already_said_hello(monkeypatch) -> None:
+async def test_greet_uses_generate_reply_not_say(monkeypatch) -> None:
     import agent as agent_mod
 
-    monkeypatch.setattr(agent_mod, "GREETING_HELLO_WAIT_SECONDS", 0.0)
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(agent_mod.asyncio, "sleep", _no_sleep)
+
+    class FakeHandle:
+        async def wait_for_playout(self):
+            return None
 
     class FakeSession:
-        tts = None
         reply_calls = 0
+        last_instructions = None
 
         def say(self, text):
-            raise RuntimeError("say() must not run on Gemini Live")
+            raise AssertionError("Gemini Live must not use session.say()")
 
         def generate_reply(self, instructions=None):
             self.reply_calls += 1
-            raise AssertionError("generate_reply should be skipped")
+            self.last_instructions = instructions
+            return FakeHandle()
 
-    state = FakeState(transcript_parts=["Aarya: Hello."])
+    state = FakeState()
     state.room_name = "test-room"
     state._greeting_sent = False
     state._greeting_lock = asyncio.Lock()
     session = FakeSession()
     await _greet_prospect(session, state)
     assert state._greeting_sent is True
-    assert session.reply_calls == 0
+    assert session.reply_calls == 1
+    assert "Hello" in (session.last_instructions or "")
 
-
-@pytest.mark.asyncio
-async def test_greet_does_not_call_generate_reply_on_realtime(monkeypatch) -> None:
-    import agent as agent_mod
-
-    monkeypatch.setattr(agent_mod, "GREETING_HELLO_WAIT_SECONDS", 0.0)
-
-    class FakeSession:
-        tts = None
-        reply_calls = 0
-
-        def generate_reply(self, instructions=None):
-            self.reply_calls += 1
-            raise AssertionError("generate_reply races Gemini Live")
-
-    state = FakeState(transcript_parts=["Prospect: Hello."])
-    state.room_name = "test-room"
-    state._greeting_sent = False
-    state._greeting_lock = asyncio.Lock()
-    session = FakeSession()
     await _greet_prospect(session, state)
-    assert state._greeting_sent is True
-    assert session.reply_calls == 0
+    assert session.reply_calls == 1
 
 
 def test_vertex_live_strips_gemini_api_keys(monkeypatch) -> None:

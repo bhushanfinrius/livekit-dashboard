@@ -54,10 +54,7 @@ from livekit.agents import (
     RunContext,
 )
 from livekit.plugins import google
-from livekit.plugins import silero
 import chromadb
-from livekit.plugins import sarvam, cartesia
-from livekit.agents import inference   # or `from livekit.plugins import inference`, depending on your SDK version
 
 logger = logging.getLogger("CTF-Agent")
 logger.setLevel(logging.INFO)
@@ -112,14 +109,6 @@ GOOGLE_CLOUD_PROJECT = (
     or os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
     or "project-ed86b9c7-57a3-441d-8f9"
 )
-GEMINI_LIVE_VERTEX_MODEL = "gemini-live-2.5-flash-native-audio"
-_REALTIME_VOICE_INSTRUCTIONS = """
-Speak only in natural Indian English accent.
-Never use an American accent.
-Use Indian pronunciation, Indian rhythm, and Indian conversational style.
-Sound like a professional Indian female caller from Mumbai or Pune.
-Use Hinglish naturally when the user speaks Hindi.
-"""
 
 
 def _prepare_vertex_env() -> None:
@@ -131,39 +120,6 @@ def _prepare_vertex_env() -> None:
     os.environ["GCS_SERVICE_ACCOUNT_JSON"] = GOOGLE_SERVICE_ACCOUNT_JSON
     os.environ.pop("GOOGLE_API_KEY", None)
     os.environ.pop("GEMINI_API_KEY", None)
-
-
-def build_google_realtime_model() -> google.realtime.RealtimeModel:
-    _prepare_vertex_env()
-    creds = GOOGLE_SERVICE_ACCOUNT_JSON
-    creds_ok = bool(creds) and (creds.startswith("{") or os.path.exists(creds))
-    logger.info(
-        "Gemini Live → Vertex only model=%s project=%s location=%s creds=%s",
-        GEMINI_LIVE_VERTEX_MODEL,
-        GOOGLE_CLOUD_PROJECT,
-        GOOGLE_CLOUD_LOCATION,
-        creds if creds_ok else "MISSING",
-    )
-    if not creds_ok:
-        logger.error(
-            "Set GCS_SERVICE_ACCOUNT_JSON=livekit-storage.json (Vertex + GCS). "
-            "Do not set GOOGLE_API_KEY and do not use solvoxai.json."
-        )
-    from google.genai.types import Behavior as GeminiToolBehavior
-
-    return google.realtime.RealtimeModel(
-        model=GEMINI_LIVE_VERTEX_MODEL,
-        voice="Sulafat",
-        temperature=0.65,
-        modalities=["AUDIO"],
-        instructions=_REALTIME_VOICE_INSTRUCTIONS,
-        vertexai=True,
-        project=GOOGLE_CLOUD_PROJECT,
-        location=GOOGLE_CLOUD_LOCATION,
-        # Blocked end_call must not stall Gemini Live; otherwise generate_reply
-        # and the next spoken turn wait on a tool result that wants no reply.
-        tool_behavior=GeminiToolBehavior.NON_BLOCKING,
-    )
 
 
 def _google_analysis_client():
@@ -1862,7 +1818,7 @@ async def rag_retrieve(query: str, n_results: int = 5) -> str:
 # ════════════════════════════════════════════════════════════════════════════════
 # HANGUP
 # ════════════════════════════════════════════════════════════════════════════════
-async def hangup_call(*, delay_seconds: float = 1.2):
+async def hangup_call(*, delay_seconds: float = 0.4):
     ctx = get_job_context()
     if ctx is None:
         logger.warning("No job context for hangup")
@@ -1889,9 +1845,6 @@ _CLOSING_GREETING_INSTRUCTION = (
 
 async def _deliver_closing_greeting(session: AgentSession, room_name: str) -> None:
     """[H13] Closing greeting with hard timeout — never hangs the call."""
-    if not _session_has_tts(session):
-        logger.info(f"[{room_name}] Skipping closing generate_reply on Gemini Live")
-        return
     try:
         handle = session.generate_reply(instructions=_CLOSING_GREETING_INSTRUCTION)
         await asyncio.wait_for(handle.wait_for_playout(), timeout=15.0)
@@ -2393,7 +2346,6 @@ class LumiverseSalesAgent(Agent):
         self.rejection_count = 0
 
     async def on_enter(self):
-        # Outbound: greet as soon as SIP joins (see _run_outbound_call_setup).
         if self._state.is_inbound:
             await _greet_prospect(self.session, self._state)
 
@@ -2423,7 +2375,7 @@ class LumiverseSalesAgent(Agent):
 
         logger.info(f"🛑 end_call triggered — {reason}")
         await ctx.wait_for_playout()
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.25)
         await _graceful_call_shutdown(
             self._state,
             self.session,
@@ -2466,43 +2418,8 @@ _GREETING_INSTRUCTION = (
     'Say exactly one word to the caller: "Hello". '
     "Do not introduce yourself. Do not add any other words. Then stop and wait for them to respond."
 )
-GREETING_PLAYOUT_TIMEOUT = float(os.getenv("GREETING_PLAYOUT_TIMEOUT", "8"))
-GREETING_HELLO_WAIT_SECONDS = float(os.getenv("GREETING_HELLO_WAIT_SECONDS", "1"))
-
-
-def _session_has_tts(session: AgentSession) -> bool:
-    """Gemini Live RealtimeModel has no TTS. AgentSession.say() still exists and throws."""
-    return getattr(session, "tts", None) is not None
-
-
-def _agent_already_said_hello(state: CallState) -> bool:
-    for part in state.transcript_parts:
-        if ":" not in part:
-            continue
-        role, text = part.split(":", 1)
-        if role.strip().lower().startswith("prospect"):
-            continue
-        if text.strip().lower().startswith("hello"):
-            return True
-    return False
-
-
-async def _wait_for_speech_handle(handle, timeout: float) -> None:
-    if handle is None:
-        return
-    wait = getattr(handle, "wait_for_playout", None)
-    if callable(wait):
-        await asyncio.wait_for(wait(), timeout=timeout)
-        return
-    if asyncio.iscoroutine(handle):
-        await asyncio.wait_for(handle, timeout=timeout)
-
-
-async def _speak_opening_hello(session: AgentSession) -> None:
-    """Piped TTS only. Gemini Live has no say()/generate_reply greeting path."""
-    if not _session_has_tts(session):
-        return
-    await _wait_for_speech_handle(session.say("Hello"), GREETING_PLAYOUT_TIMEOUT)
+GREETING_MAX_ATTEMPTS = int(os.getenv("GREETING_MAX_ATTEMPTS", "3"))
+GREETING_PLAYOUT_TIMEOUT = float(os.getenv("GREETING_PLAYOUT_TIMEOUT", "20"))
 
 
 async def _greet_prospect(session: AgentSession, state: CallState) -> None:
@@ -2511,42 +2428,32 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
             return
 
         logger.info(f"[{state.room_name}] Greeting prospect...")
-        waited = 0.0
-        while waited < GREETING_HELLO_WAIT_SECONDS:
-            if _agent_already_said_hello(state):
-                state._greeting_sent = True
-                logger.info(
-                    f"[{state.room_name}] Gemini Live already said Hello — skipping generate_reply"
+        for attempt in range(1, GREETING_MAX_ATTEMPTS + 1):
+            try:
+                delay = 1.0 if attempt == 1 else min(2.0 * attempt, 6.0)
+                await asyncio.sleep(delay)
+                handle = session.generate_reply(instructions=_GREETING_INSTRUCTION)
+                await asyncio.wait_for(
+                    handle.wait_for_playout(),
+                    timeout=GREETING_PLAYOUT_TIMEOUT,
                 )
+                state._greeting_sent = True
+                logger.info(f"[{state.room_name}] Greeting completed (attempt {attempt})")
                 return
-            await asyncio.sleep(0.4)
-            waited += 0.4
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[{state.room_name}] Greeting timed out "
+                    f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}) — Gemini may still be warming up"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[{state.room_name}] Greeting failed "
+                    f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}): {e}"
+                )
 
-        if _agent_already_said_hello(state):
-            state._greeting_sent = True
-            logger.info(
-                f"[{state.room_name}] Gemini Live already said Hello — skipping generate_reply"
-            )
-            return
-
-        if not _session_has_tts(session):
-            # CALL_FLOW already opens with Hello. generate_reply races Gemini Live:
-            # "received server content but no active generation" then
-            # "generate_reply timed out waiting for generation_created".
-            state._greeting_sent = True
-            logger.info(
-                f"[{state.room_name}] Gemini Live greeting owned by CALL_FLOW — not calling generate_reply"
-            )
-            return
-
-        try:
-            await _speak_opening_hello(session)
-            state._greeting_sent = True
-            logger.info(f"[{state.room_name}] Greeting completed")
-        except Exception as e:
-            logger.warning(
-                f"[{state.room_name}] Greeting kick failed: {e} — CALL_FLOW may still speak Hello"
-            )
+        logger.error(
+            f"[{state.room_name}] Greeting failed after {GREETING_MAX_ATTEMPTS} attempts — call continues"
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2659,11 +2566,22 @@ async def _wait_for_sip_participant(ctx: JobContext, timeout: float) -> Optional
         return _sip_participant_identity(ctx)
 
 
-async def _run_outbound_call_setup(ctx: JobContext, session: AgentSession, state: CallState) -> None:
-    """Wait for callee SIP join, then let Gemini Live say Hello from CALL_FLOW."""
-    try:
-        await asyncio.sleep(0.2)
+async def _maybe_greet_on_sip_join(
+    session: AgentSession,
+    state: CallState,
+    participant: rtc.RemoteParticipant,
+) -> None:
+    if state.is_inbound or state._greeting_sent:
+        return
+    if not _is_sip_callee_participant(participant):
+        return
+    await asyncio.sleep(0.5)
+    await _greet_prospect(session, state)
 
+
+async def _run_outbound_call_setup(ctx: JobContext, session: AgentSession, state: CallState) -> None:
+    """SIP join already confirmed before session creation — just greet."""
+    try:
         sip_identity = await _wait_for_sip_participant(ctx, SIP_JOIN_TIMEOUT)
         remotes = [p.identity for p in ctx.room.remote_participants.values() if p.identity]
         if not sip_identity and not should_end_as_no_answer(remotes):
@@ -2677,10 +2595,10 @@ async def _run_outbound_call_setup(ctx: JobContext, session: AgentSession, state
             return
 
         logger.info(f"[{state.room_name}] SIP participant joined: {sip_identity}")
+        await asyncio.sleep(1.0)
+        await _greet_prospect(session, state)
         if VOICEMAIL_DETECTION_ENABLED:
             logger.info(f"[{state.room_name}] 🔍 Voicemail detection active (parallel STT, non-blocking)")
-        await asyncio.sleep(0.6)
-        await _greet_prospect(session, state)
     except Exception as e:
         logger.error(f"[{state.room_name}] Outbound setup failed: {e}", exc_info=True)
 
@@ -2822,8 +2740,29 @@ async def entrypoint(ctx: JobContext):
     for attempt in range(1, 4):
         prev_session = session      # [H11] close zombie session from failed attempt
         try:
+            _prepare_vertex_env()
+            logger.info(
+                "Gemini Live → Vertex model=gemini-live-2.5-flash-native-audio project=%s location=%s",
+                GOOGLE_CLOUD_PROJECT,
+                GOOGLE_CLOUD_LOCATION,
+            )
             session = AgentSession(
-                llm=build_google_realtime_model(),
+                llm=google.realtime.RealtimeModel(
+                    model="gemini-live-2.5-flash-native-audio",
+                    voice="Sulafat",
+                    temperature=0.65,
+                    modalities=["AUDIO"],
+                    vertexai=True,
+                    project=GOOGLE_CLOUD_PROJECT,
+                    location=GOOGLE_CLOUD_LOCATION,
+                    instructions="""
+                    Speak only in natural Indian English accent.
+                    Never use an American accent.
+                    Use Indian pronunciation, Indian rhythm, and Indian conversational style.
+                    Sound like a professional Indian female caller from Mumbai or Pune.
+                    Use Hinglish naturally when the user speaks Hindi.
+                    """,
+                ),
             )
 
             # ── Transcript tracking ──────────────────────────────────────────
@@ -2888,7 +2827,6 @@ async def entrypoint(ctx: JobContext):
                     audio_input=room_io.AudioInputOptions(
                         pre_connect_audio=True,
                         pre_connect_audio_timeout=3.0,
-                        # noise_cancellation removed temporarily — DLL fails to load on this Windows machine (LoadLibraryExW)
                     ),
                     close_on_disconnect=False,
                 ),
@@ -2904,18 +2842,10 @@ async def entrypoint(ctx: JobContext):
                             volume=BACKGROUND_AUDIO_VOLUME,
                         ),
                     )
-                    await state._background_audio.start(
-                        room=ctx.room,
-                        agent_session=session,
-                    )
-                    logger.info(
-                        f"[{state.room_name}] 🔊 Background audio started "
-                        f"(volume={BACKGROUND_AUDIO_VOLUME})"
-                    )
+                    await state._background_audio.start(room=ctx.room, agent_session=session)
+                    logger.info(f"[{state.room_name}] 🔊 Background audio started (volume={BACKGROUND_AUDIO_VOLUME})")
                 except Exception as bg_err:
-                    logger.warning(
-                        f"[{state.room_name}] Background audio failed — call continues: {bg_err}"
-                    )
+                    logger.warning(f"[{state.room_name}] Background audio failed — call continues: {bg_err}")
                     state._background_audio = None
 
             state.session = session
@@ -3015,7 +2945,11 @@ async def entrypoint(ctx: JobContext):
         if _disconnect_task and not _disconnect_task.done():
             _disconnect_task.cancel()
             logger.info(f"[{state.room_name}] SIP rejoined — disconnect cancelled")
-        # Outbound Hello is owned by _run_outbound_call_setup. Do not greet again here.
+        if session is not None and not state.is_inbound:
+            asyncio.create_task(
+                _maybe_greet_on_sip_join(session, state, participant),
+                name=f"sip-greet-{state.room_name[:24]}",
+            )
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):

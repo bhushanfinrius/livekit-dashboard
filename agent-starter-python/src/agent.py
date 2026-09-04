@@ -250,10 +250,10 @@ AUTO_TRACK_EGRESS_ENABLED = os.getenv("AUTO_TRACK_EGRESS_ENABLED", "true").lower
     "true",
     "yes",
 )
-# Campaign rooms already exist, so CreateRoom egress never applies. Do NOT start
-# Chrome mixed jobs as fallback — N worker processes × retries 503 the SIP path
-# and phones never ring. Track fallback is one-shot and trips a shared circuit.
-FALLBACK_MIXED_EGRESS = os.getenv("FALLBACK_MIXED_EGRESS", "false").lower() in (
+# Campaign rooms already exist, so CreateRoom egress never applies. Mixed is
+# audio-only (no Chrome layout). Start it after SIP joins so both voices are in
+# one file. Track egress still records each side if mixed 503s.
+FALLBACK_MIXED_EGRESS = os.getenv("FALLBACK_MIXED_EGRESS", "true").lower() in (
     "1",
     "true",
     "yes",
@@ -834,6 +834,42 @@ def _audio_track_sid(publication) -> Optional[str]:
     return sid.strip() if isinstance(sid, str) and sid.strip() else None
 
 
+def _iter_room_participants(room):
+    """Remote callers first, then the local agent — never dict keys."""
+    remote = getattr(room, "remote_participants", None) or {}
+    values = getattr(remote, "values", None)
+    if callable(values):
+        for participant in list(values()):
+            yield participant
+    elif isinstance(remote, (list, tuple)):
+        for participant in remote:
+            yield participant
+    local = getattr(room, "local_participant", None)
+    if local is not None:
+        yield local
+
+
+def _audio_track_targets(room) -> list[tuple[str, str]]:
+    """(track_sid, identity) for every published audio track, including the agent."""
+    targets: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for participant in _iter_room_participants(room):
+        if participant is None:
+            continue
+        identity = getattr(participant, "identity", "") or "participant"
+        pubs = getattr(participant, "track_publications", {}) or {}
+        pub_values = pubs.values() if hasattr(pubs, "values") else pubs
+        for pub in pub_values:
+            if not _is_audio_publication(pub):
+                continue
+            sid = _audio_track_sid(pub)
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            targets.append((sid, identity))
+    return targets
+
+
 def _find_sip_audio_track_sid(room: rtc.Room) -> Optional[str]:
     for participant in room.remote_participants.values():
         if not _is_sip_callee_participant(participant):
@@ -894,6 +930,14 @@ async def _wait_for_audio_track_sid(
         if track_sid:
             fut.set_result(track_sid)
 
+    @room.on("local_track_published")
+    def _on_local_track_published(publication, *_args):
+        if prefer_sip or fut.done() or not _is_audio_publication(publication):
+            return
+        track_sid = _audio_track_sid(publication)
+        if track_sid:
+            fut.set_result(track_sid)
+
     label = "SIP" if prefer_sip else "agent"
     try:
         track_sid = await asyncio.wait_for(fut, timeout=timeout)
@@ -909,6 +953,44 @@ async def _wait_for_audio_track_sid(
 def _egress_unavailable(error: BaseException) -> bool:
     text = str(error).lower()
     return "503" in text or "unavailable" in text or "no response from servers" in text
+
+
+def _egress_already_started(error: BaseException) -> bool:
+    text = str(error).lower()
+    return any(
+        token in text
+        for token in (
+            "already started",
+            "already exists",
+            "duplicate",
+            "egress already",
+        )
+    )
+
+
+def _is_mixed_egress(item) -> bool:
+    if item is None or isinstance(item, str):
+        return False
+    request = getattr(item, "request", None) or item
+    has_field = getattr(request, "HasField", None)
+    if callable(has_field):
+        for field in ("room", "web", "room_composite"):
+            try:
+                if has_field(field):
+                    return True
+            except Exception:
+                pass
+    kind = str(
+        getattr(item, "type", "")
+        or getattr(request, "type", "")
+        or getattr(item, "egress_type", "")
+    ).lower()
+    if "room" in kind or "composite" in kind:
+        return True
+    for path in _egress_object_paths(item):
+        if _recording_role_for_object_path(path) == "mixed":
+            return True
+    return False
 
 
 def _egress_circuit_open() -> bool:
@@ -961,6 +1043,9 @@ async def start_mixed_egress(room_name: str, gcs_creds_json: str) -> Optional[st
             )
             return result.egress_id
         except Exception as e:
+            if _egress_already_started(e):
+                logger.info(f"[{room_name}] Mixed egress already running")
+                return "existing"
             if _egress_unavailable(e):
                 _trip_egress_circuit()
             logger.error(f"[{room_name}] Failed to start mixed egress: {e}")
@@ -1004,6 +1089,11 @@ async def start_track_egress(
         )
         return result.egress_id
     except Exception as e:
+        if _egress_already_started(e):
+            logger.info(
+                f"[{room_name}] Track egress already running — track={track_id} identity={identity}"
+            )
+            return track_id
         if _egress_unavailable(e):
             _trip_egress_circuit()
         logger.error(f"[{room_name}] Failed to start track egress ({track_id}): {e}")
@@ -1015,14 +1105,55 @@ async def _start_manual_egress(
 ) -> bool:
     """Fallback: room already existed without egress config, so start jobs ourselves.
 
-    Track egress is started without waiting on mixed composite — Chrome jobs 503
-    under campaign bursts and used to delay (or skip) the lighter recordings.
+    Record every audio track (agent + caller) as it is published, then start one
+    audio-only mixed job so playback has both voices.
     """
     started = False
+
+    async def _record_sid(sid: str, identity: str) -> None:
+        nonlocal started
+        if not sid or sid in state._recorded_track_sids or state._call_end_handled:
+            return
+        state._recorded_track_sids.add(sid)
+        if await start_track_egress(state.room_name, sid, identity, gcs_creds_json):
+            started = True
+
+    def _on_remote_track(publication, participant):
+        if not _is_audio_publication(publication) or state._call_end_handled:
+            return
+        sid = _audio_track_sid(publication)
+        identity = getattr(participant, "identity", "") or "participant"
+        if sid:
+            asyncio.create_task(_record_sid(sid, identity))
+
+    def _on_local_track(publication, *_args):
+        if not _is_audio_publication(publication) or state._call_end_handled:
+            return
+        sid = _audio_track_sid(publication)
+        identity = getattr(room.local_participant, "identity", None) or AGENT_NAME
+        if sid:
+            asyncio.create_task(_record_sid(sid, identity))
+
+    room.on("track_published", _on_remote_track)
+    room.on("local_track_published", _on_local_track)
+
+    if AUTO_TRACK_EGRESS_ENABLED and not _egress_circuit_open():
+        # Snapshot immediately so the greeting is not lost, then keep listening
+        # for SIP / agent tracks that publish later.
+        for sid, identity in _audio_track_targets(room):
+            await _record_sid(sid, identity)
+        if not state._recorded_track_sids:
+            logger.info(
+                f"[{state.room_name}] Waiting for audio tracks to publish for recording"
+            )
+
     mixed_task: Optional[asyncio.Task] = None
+    existing_jobs = await _list_room_egress(state.room_name)
+    has_mixed = any(_is_mixed_egress(job) for job in existing_jobs)
     if (
         FALLBACK_MIXED_EGRESS
         and ROOM_COMPOSITE_EGRESS_ENABLED
+        and not has_mixed
         and not state._call_end_handled
         and not _egress_circuit_open()
     ):
@@ -1030,40 +1161,6 @@ async def _start_manual_egress(
             start_mixed_egress(state.room_name, gcs_creds_json),
             name=f"mixed-egress-{state.room_name[:24]}",
         )
-
-    if AUTO_TRACK_EGRESS_ENABLED and not _egress_circuit_open():
-        prefer_sip = not state.is_console
-        primary_sid = await _wait_for_audio_track_sid(
-            room, state.room_name, prefer_sip=prefer_sip, timeout=8.0
-        )
-        if not primary_sid and prefer_sip:
-            primary_sid = await _wait_for_audio_track_sid(
-                room, state.room_name, prefer_sip=False, timeout=10.0
-            )
-        if not state._call_end_handled:
-            seen: set[str] = set()
-            for participant in list(room.remote_participants.values()) + [
-                room.local_participant
-            ]:
-                if participant is None:
-                    continue
-                identity = getattr(participant, "identity", "") or "participant"
-                for pub in participant.track_publications.values():
-                    if not _is_audio_publication(pub):
-                        continue
-                    sid = _audio_track_sid(pub)
-                    if not sid or sid in seen:
-                        continue
-                    seen.add(sid)
-                    if await start_track_egress(
-                        state.room_name, sid, identity, gcs_creds_json
-                    ):
-                        started = True
-            if not seen:
-                logger.warning(
-                    f"[{state.room_name}] ⚠️ No audio tracks found for fallback recording"
-                )
-
     if mixed_task is not None:
         try:
             if await mixed_task:
@@ -1144,11 +1241,12 @@ async def ensure_room_recording(room_name: str) -> tuple[bool, bool]:
     jobs = await _list_room_egress(room_name)
     if jobs:
         logger.info(f"[{room_name}] ✅ Egress active — {len(jobs)} job(s) attached")
-        return True, False
-
-    logger.warning(
-        f"[{room_name}] ⚠️ No egress attached (room pre-existed) — starting manual fallback"
-    )
+    else:
+        logger.warning(
+            f"[{room_name}] ⚠️ No egress attached (room pre-existed) — starting manual fallback"
+        )
+    # Always supplement after the agent session starts: campaign rooms skip mixed at
+    # CreateRoom, and auto-track often captures only the SIP caller, not local agent audio.
     return True, True
 
 
@@ -1805,6 +1903,7 @@ class CallState:
         self._recording_task: Optional[asyncio.Task] = None
         self._recording_finalized: bool = False
         self._recording_lock: asyncio.Lock = asyncio.Lock()
+        self._recorded_track_sids: set[str] = set()
         self._shutdown_task: Optional[asyncio.Task] = None
         self._greeting_sent: bool = False
         self._greeting_lock: asyncio.Lock = asyncio.Lock()
@@ -3251,8 +3350,9 @@ async def entrypoint(ctx: JobContext):
                 _enforce_max_call_duration(state, session),
                 name=f"max-duration-{state.room_name[:24]}",
             )
-            if state.recording_needs_fallback and (
-                state._recording_task is None or state._recording_task.done()
+            if (
+                (state.recording_active or state.recording_needs_fallback)
+                and (state._recording_task is None or state._recording_task.done())
             ):
                 state._recording_task = asyncio.create_task(
                     _run_recording_fallback(ctx.room, state),

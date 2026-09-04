@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import agent  # noqa: E402
 from agent import (  # noqa: E402
+    _audio_track_targets,
     _mixed_egress_filepath,
     _pick_primary_recording_url,
     _publisher_identity_from_object_path,
@@ -80,6 +81,46 @@ def test_pick_primary_prefers_mixed() -> None:
         {"role": "mixed", "url": "https://example.com/mixed.ogg"},
     ]
     assert _pick_primary_recording_url(recordings) == "https://example.com/mixed.ogg"
+
+
+def test_audio_track_targets_includes_agent_and_sip() -> None:
+    class _Pub:
+        def __init__(self, sid: str, kind: str) -> None:
+            self.sid = sid
+            self.kind = kind
+
+    class _Participant:
+        def __init__(self, identity: str, pubs: dict) -> None:
+            self.identity = identity
+            self.track_publications = pubs
+
+    class _Room:
+        local_participant = _Participant("CTF-Agent", {"a": _Pub("TR_AGENT", "KIND_AUDIO")})
+        remote_participants = {
+            "sip": _Participant("sip_918668641761", {"s": _Pub("TR_SIP", "KIND_AUDIO")}),
+        }
+
+    targets = _audio_track_targets(_Room())
+    identities = {identity for _sid, identity in targets}
+    sids = {sid for sid, _identity in targets}
+    assert "CTF-Agent" in identities
+    assert "sip_918668641761" in identities
+    assert sids == {"TR_AGENT", "TR_SIP"}
+
+
+def test_is_mixed_egress_detects_room_composite() -> None:
+    class _Job:
+        type = "EGRESS_TYPE_ROOM_COMPOSITE"
+
+    assert agent._is_mixed_egress(_Job()) is True
+    assert agent._is_mixed_egress("job-1") is False
+    assert agent._is_mixed_egress(None) is False
+
+
+def test_egress_already_started_detects_duplicate() -> None:
+    assert agent._egress_already_started(Exception("egress already started")) is True
+    assert agent._egress_already_started(Exception("duplicate egress")) is True
+    assert agent._egress_already_started(Exception("status=503")) is False
 
 
 def test_pick_primary_prefers_prospect_without_mixed() -> None:
@@ -302,13 +343,14 @@ def test_ensure_room_recording_campaign_skips_mixed(
     assert egress.HasField("tracks")
 
 
-def test_ensure_room_recording_skips_fallback_when_egress_attached(
+def test_ensure_room_recording_still_supplements_when_egress_attached(
     monkeypatch, patched_livekit
 ) -> None:
+    """Auto-track may already be recording the SIP caller; still start agent + mixed."""
     monkeypatch.setattr(agent, "_list_room_egress", _async_return(["job-1"]))
     active, needs_fallback = asyncio.run(ensure_room_recording("room1"))
     assert active is True
-    assert needs_fallback is False
+    assert needs_fallback is True
     assert patched_livekit.requests[0].name == "room1"
 
 

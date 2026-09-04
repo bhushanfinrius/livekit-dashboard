@@ -216,6 +216,10 @@ GCS_BUCKET_NAME          = os.getenv("GCS_BUCKET_NAME", "my_livekit_ecordings")
 #   auto track egress           -> one file per published track for analysis
 ROOM_COMPOSITE_EGRESS_ENABLED = os.getenv("ROOM_COMPOSITE_EGRESS_ENABLED", "true").lower() in ("1", "true", "yes")
 AUTO_TRACK_EGRESS_ENABLED = os.getenv("AUTO_TRACK_EGRESS_ENABLED", "true").lower() in ("1", "true", "yes")
+# Campaign bursts: one Chrome composite at a time, retry LiveKit 503s.
+MIXED_EGRESS_CONCURRENCY = max(1, int(os.getenv("MIXED_EGRESS_CONCURRENCY", "1")))
+EGRESS_START_ATTEMPTS = max(1, int(os.getenv("EGRESS_START_ATTEMPTS", "4")))
+_mixed_egress_gate: Optional[asyncio.Semaphore] = None
 AUTO_TRACK_EGRESS_FILEPATH = os.getenv(
     "AUTO_TRACK_EGRESS_FILEPATH",
     f"recordings/{AGENT_NAME}/{{room_name}}/{{publisher_identity}}-{{time}}.ogg",
@@ -664,24 +668,48 @@ async def _wait_for_audio_track_sid(
         return None
 
 
+def _egress_unavailable(error: BaseException) -> bool:
+    text = str(error).lower()
+    return "503" in text or "unavailable" in text or "no response from servers" in text
+
+
+def _mixed_egress_semaphore() -> asyncio.Semaphore:
+    global _mixed_egress_gate
+    if _mixed_egress_gate is None:
+        _mixed_egress_gate = asyncio.Semaphore(MIXED_EGRESS_CONCURRENCY)
+    return _mixed_egress_gate
+
+
 # ── Manual egress starters (fallback when declarative config never applied) ────
 async def start_mixed_egress(room_name: str, gcs_creds_json: str) -> Optional[str]:
-    try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        try:
-            result = await lkapi.egress.start_room_composite_egress(
-                build_mixed_egress_request(gcs_creds_json, room_name)
-            )
-        finally:
-            await lkapi.aclose()
-        logger.info(
-            f"[{room_name}] 🎬 Mixed egress started — egress_id={result.egress_id} → "
-            f"gs://{GCS_BUCKET_NAME}/{_mixed_egress_filepath(room_name)}"
-        )
-        return result.egress_id
-    except Exception as e:
-        logger.error(f"[{room_name}] Failed to start mixed egress: {e}")
-        return None
+    """Serialize Chrome composites so campaign bursts don't 503 the egress worker."""
+    async with _mixed_egress_semaphore():
+        for attempt in range(1, EGRESS_START_ATTEMPTS + 1):
+            try:
+                lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+                try:
+                    result = await lkapi.egress.start_room_composite_egress(
+                        build_mixed_egress_request(gcs_creds_json, room_name)
+                    )
+                finally:
+                    await lkapi.aclose()
+                logger.info(
+                    f"[{room_name}] 🎬 Mixed egress started — egress_id={result.egress_id} → "
+                    f"gs://{GCS_BUCKET_NAME}/{_mixed_egress_filepath(room_name)}"
+                )
+                return result.egress_id
+            except Exception as e:
+                if _egress_unavailable(e) and attempt < EGRESS_START_ATTEMPTS:
+                    delay = min(2 * attempt, 8)
+                    logger.warning(
+                        f"[{room_name}] Mixed egress busy "
+                        f"(attempt {attempt}/{EGRESS_START_ATTEMPTS}): {e} — retry in {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(f"[{room_name}] Failed to start mixed egress: {e}")
+                return None
+    return None
 
 
 async def start_track_egress(
@@ -720,44 +748,52 @@ async def start_track_egress(
 
 
 async def _start_manual_egress(room: rtc.Room, state: "CallState", gcs_creds_json: str) -> bool:
-    """Fallback: room already existed without egress config, so start jobs ourselves."""
+    """Fallback: room already existed without egress config, so start jobs ourselves.
+
+    Track egress is started without waiting on mixed composite — Chrome jobs 503
+    under campaign bursts and used to delay (or skip) the lighter recordings.
+    """
     started = False
-
+    mixed_task: Optional[asyncio.Task] = None
     if ROOM_COMPOSITE_EGRESS_ENABLED and not state._call_end_handled:
-        if await start_mixed_egress(state.room_name, gcs_creds_json):
-            started = True
-
-    if not AUTO_TRACK_EGRESS_ENABLED:
-        return started
-
-    prefer_sip = not state.is_console
-    primary_sid = await _wait_for_audio_track_sid(
-        room, state.room_name, prefer_sip=prefer_sip, timeout=30.0
-    )
-    if not primary_sid and prefer_sip:
-        primary_sid = await _wait_for_audio_track_sid(
-            room, state.room_name, prefer_sip=False, timeout=10.0
+        mixed_task = asyncio.create_task(
+            start_mixed_egress(state.room_name, gcs_creds_json),
+            name=f"mixed-egress-{state.room_name[:24]}",
         )
-    if state._call_end_handled:
-        return started
 
-    seen: set[str] = set()
-    for participant in list(room.remote_participants.values()) + [room.local_participant]:
-        if participant is None:
-            continue
-        identity = getattr(participant, "identity", "") or "participant"
-        for pub in participant.track_publications.values():
-            if not _is_audio_publication(pub):
-                continue
-            sid = _audio_track_sid(pub)
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            if await start_track_egress(state.room_name, sid, identity, gcs_creds_json):
+    if AUTO_TRACK_EGRESS_ENABLED:
+        prefer_sip = not state.is_console
+        primary_sid = await _wait_for_audio_track_sid(
+            room, state.room_name, prefer_sip=prefer_sip, timeout=30.0
+        )
+        if not primary_sid and prefer_sip:
+            primary_sid = await _wait_for_audio_track_sid(
+                room, state.room_name, prefer_sip=False, timeout=10.0
+            )
+        if not state._call_end_handled:
+            seen: set[str] = set()
+            for participant in list(room.remote_participants.values()) + [room.local_participant]:
+                if participant is None:
+                    continue
+                identity = getattr(participant, "identity", "") or "participant"
+                for pub in participant.track_publications.values():
+                    if not _is_audio_publication(pub):
+                        continue
+                    sid = _audio_track_sid(pub)
+                    if not sid or sid in seen:
+                        continue
+                    seen.add(sid)
+                    if await start_track_egress(state.room_name, sid, identity, gcs_creds_json):
+                        started = True
+            if not seen:
+                logger.warning(f"[{state.room_name}] ⚠️ No audio tracks found for fallback recording")
+
+    if mixed_task is not None:
+        try:
+            if await mixed_task:
                 started = True
-
-    if not seen:
-        logger.warning(f"[{state.room_name}] ⚠️ No audio tracks found for fallback recording")
+        except Exception as e:
+            logger.error(f"[{state.room_name}] Mixed egress task failed: {e}")
     return started
 
 

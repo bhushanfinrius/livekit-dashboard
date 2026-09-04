@@ -1,4 +1,4 @@
-import { kindLabel, type KindBucket } from "@/lib/overview/payload";
+import { canonicalParticipantKey, kindFromIdentity, kindLabel, type KindBucket } from "@/lib/overview/payload";
 import type { ChartPoint, KindSlice, OverviewRange, RankedItem } from "@/lib/overview/types";
 
 const HOUR = 60 * 60 * 1000;
@@ -9,6 +9,7 @@ export type SeriesEvent = {
   roomName: string | null;
   participantIdentity: string | null;
   kind: KindBucket;
+  infra?: boolean;
   region: string | null;
   sipDirection: "inbound" | "outbound" | null;
   at: number;
@@ -49,30 +50,87 @@ function clip(interval: Interval, rangeStart: number, rangeEnd: number) {
   return end > start ? { ...interval, start, end } : null;
 }
 
+const LIVE_OPEN_GRACE_MS = 120_000;
+
+function seriesKind(event: SeriesEvent): KindBucket {
+  const fromId = kindFromIdentity(event.participantIdentity);
+  if (fromId === "sip" || fromId === "agent") return fromId;
+  return event.kind;
+}
+
+function participantEventKey(roomName: string, identity: string) {
+  return `${roomName}::${canonicalParticipantKey(identity)}`;
+}
+
+function closeOpenForRoom(
+  open: Map<string, { at: number; kind: KindBucket; sipDirection: "inbound" | "outbound" | null; roomName: string }[]>,
+  roomName: string,
+  at: number,
+  intervals: Interval[],
+) {
+  const prefix = `${roomName}::`;
+  for (const [key, stack] of open) {
+    if (!key.startsWith(prefix)) continue;
+    while (stack.length > 0) {
+      const started = stack.pop()!;
+      if (at > started.at) {
+        intervals.push({
+          start: started.at,
+          end: at,
+          kind: started.kind,
+          sipDirection: started.sipDirection,
+        });
+      }
+    }
+  }
+}
+
 function pairParticipantIntervals(events: SeriesEvent[], fallbackStart: number, openEnd: number) {
   const sorted = [...events].sort((a, b) => a.at - b.at);
   const open = new Map<
     string,
-    { at: number; kind: KindBucket; sipDirection: "inbound" | "outbound" | null }[]
+    { at: number; kind: KindBucket; sipDirection: "inbound" | "outbound" | null; roomName: string }[]
   >();
   const intervals: Interval[] = [];
+  const lastAtByRoom = new Map<string, number>();
   const startTypes = new Set(["participant_joined"]);
   const endTypes = new Set(["participant_left", "participant_connection_aborted"]);
 
   for (const event of sorted) {
+    if (event.roomName) {
+      lastAtByRoom.set(event.roomName, Math.max(lastAtByRoom.get(event.roomName) ?? 0, event.at));
+    }
+
+    if (event.eventType === "room_finished" && event.roomName) {
+      closeOpenForRoom(open, event.roomName, event.at, intervals);
+      continue;
+    }
+
+    if (event.infra || kindFromIdentity(event.participantIdentity) === "infra") continue;
     if (!event.roomName || !event.participantIdentity) continue;
-    const key = `${event.roomName}::${event.participantIdentity}`;
+    const key = participantEventKey(event.roomName, event.participantIdentity);
+    const kind = seriesKind(event);
 
     if (startTypes.has(event.eventType)) {
       const stack = open.get(key) ?? [];
-      stack.push({ at: event.at, kind: event.kind, sipDirection: event.sipDirection });
+      stack.push({
+        at: event.at,
+        kind,
+        sipDirection: event.sipDirection,
+        roomName: event.roomName,
+      });
       open.set(key, stack);
       continue;
     }
 
     if (!endTypes.has(event.eventType)) continue;
     const stack = open.get(key) ?? [];
-    const started = stack.pop() ?? { at: fallbackStart, kind: event.kind, sipDirection: event.sipDirection };
+    const started = stack.pop() ?? {
+      at: fallbackStart,
+      kind,
+      sipDirection: event.sipDirection,
+      roomName: event.roomName,
+    };
     intervals.push({
       start: started.at,
       end: event.at,
@@ -84,12 +142,17 @@ function pairParticipantIntervals(events: SeriesEvent[], fallbackStart: number, 
 
   for (const stack of open.values()) {
     for (const started of stack) {
-      intervals.push({
-        start: started.at,
-        end: openEnd,
-        kind: started.kind,
-        sipDirection: started.sipDirection,
-      });
+      const lastAt = lastAtByRoom.get(started.roomName) ?? started.at;
+      const stale = openEnd - lastAt > LIVE_OPEN_GRACE_MS;
+      const end = stale ? Math.max(started.at, lastAt) : openEnd;
+      if (end > started.at) {
+        intervals.push({
+          start: started.at,
+          end,
+          kind: started.kind,
+          sipDirection: started.sipDirection,
+        });
+      }
     }
   }
 
@@ -142,7 +205,7 @@ function connectionSuccessSeries(
     let bucketJoins = 0;
     let bucketAborted = 0;
     for (const event of events) {
-      if (event.at < t || event.at >= bucketEnd) continue;
+      if (event.infra || event.at < t || event.at >= bucketEnd) continue;
       if (event.eventType === "participant_joined") bucketJoins += 1;
       if (event.eventType === "participant_connection_aborted") bucketAborted += 1;
     }
@@ -180,8 +243,9 @@ function minutesByKind(intervals: Interval[]): KindSlice[] {
 function topRegions(events: SeriesEvent[]): RankedItem[] {
   const counts = new Map<string, number>();
   for (const event of events) {
-    if (event.eventType !== "participant_joined") continue;
-    const name = event.region || "Unknown";
+    if (event.infra || event.eventType !== "participant_joined") continue;
+    const name = event.region?.trim();
+    if (!name || name.toLowerCase() === "unknown") continue;
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -213,7 +277,7 @@ export function buildOverviewSeries(events: SeriesEvent[], range: OverviewRange,
       const bucketEnd = Math.min(t + step, end);
       let value = 0;
       for (const event of events) {
-        if (event.eventType !== "participant_joined" || event.kind !== "sip") continue;
+        if (event.infra || event.eventType !== "participant_joined" || seriesKind(event) !== "sip") continue;
         if (event.at >= t && event.at < bucketEnd) value += 1;
       }
       points.push({ date: labelFor(t, range), value });

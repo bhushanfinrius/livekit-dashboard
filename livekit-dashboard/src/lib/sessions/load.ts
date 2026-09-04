@@ -30,18 +30,28 @@ function toEvents(
     rawPayload: unknown;
   }[],
 ) {
-  return rows.map((row) => {
+  return rows.flatMap((row) => {
     const participant = parseParticipantMeta(row.rawPayload);
+    if (
+      participant.infra &&
+      (row.eventType === "participant_joined" ||
+        row.eventType === "participant_left" ||
+        row.eventType === "participant_connection_aborted")
+    ) {
+      return [];
+    }
     const room = parseRoomMeta(row.rawPayload);
-    return {
-      id: row.id,
-      eventType: row.eventType,
-      roomName: row.roomName ?? room.name,
-      roomSid: room.sid,
-      participantIdentity: row.participantIdentity,
-      kind: participant.kind,
-      at: row.createdAt.getTime(),
-    };
+    return [
+      {
+        id: row.id,
+        eventType: row.eventType,
+        roomName: row.roomName ?? room.name,
+        roomSid: room.sid,
+        participantIdentity: row.participantIdentity ?? participant.identity,
+        kind: participant.kind,
+        at: row.createdAt.getTime(),
+      },
+    ];
   });
 }
 

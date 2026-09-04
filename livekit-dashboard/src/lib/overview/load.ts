@@ -79,6 +79,7 @@ export async function loadOverview(
         roomName: row.roomName,
         participantIdentity: row.participantIdentity,
         kind: meta.kind,
+        infra: meta.infra,
         region: meta.region,
         sipDirection: meta.sip.direction,
         at: row.createdAt.getTime(),
@@ -101,9 +102,15 @@ export async function loadOverview(
     now,
   );
   const { start, end, step } = rangeWindow(range, now);
-  const reconstructed = reconstructSessions(mapped.map((row) => row.session), now).filter((session) =>
-    sessionOverlapsRange(session, start, end, now),
-  );
+  const reconstructed = reconstructSessions(
+    mapped
+      .filter((row) => {
+        if (!row.series.infra) return true;
+        return row.session.eventType === "room_started" || row.session.eventType === "room_finished";
+      })
+      .map((row) => row.session),
+    now,
+  ).filter((session) => sessionOverlapsRange(session, start, end, now));
   const sessionPayload = await loadSessions(projectId, range);
   const sessions = sessionPayload.sessions.length > 0 ? sessionPayload.sessions : reconstructed;
   const sipSessions = sessions.filter((session) => session.features.includes("sip")).length;

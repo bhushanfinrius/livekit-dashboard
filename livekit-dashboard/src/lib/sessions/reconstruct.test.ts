@@ -194,4 +194,80 @@ describe("reconstructSessions", () => {
     expect(sessions[0].status).toBe("ended");
     expect(sessionDisplayId(sessions[0])).toBe("RM_camp1");
   });
+
+  it("counts agent + SIP once and ignores egress recorders", () => {
+    const at = Date.parse("2026-09-04T07:21:10.000Z");
+    const sessions = reconstructSessions(
+      [
+        {
+          id: "a",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "agent-AJ_78W37M73aQvw",
+          kind: "agent",
+          at,
+        },
+        {
+          id: "b",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "sip_918177938974",
+          kind: "webrtc",
+          at: at + 1000,
+        },
+        {
+          id: "c",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "EG_mixed",
+          kind: "webrtc",
+          at: at + 2000,
+        },
+        {
+          id: "d",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "EG_track1",
+          kind: "webrtc",
+          at: at + 3000,
+        },
+        {
+          id: "e",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "EG_track2",
+          kind: "webrtc",
+          at: at + 4000,
+        },
+        {
+          id: "f",
+          eventType: "participant_joined",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: "sip_+918177938974",
+          kind: "sip",
+          at: at + 5000,
+        },
+        {
+          id: "fin",
+          eventType: "room_finished",
+          roomName: "test-2e551bbd-20260904_125110_466836",
+          roomSid: "RM_KAevdZkfTXPF",
+          participantIdentity: null,
+          kind: "webrtc",
+          at: at + 43_000,
+        },
+      ],
+      at + 120_000,
+    );
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].participantCount).toBe(2);
+    expect(sessions[0].peakParticipants).toBe(2);
+    expect(sessions[0].participants.map((p) => p.kind).sort()).toEqual(["agent", "sip"]);
+  });
 });

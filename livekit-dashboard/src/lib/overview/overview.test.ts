@@ -92,6 +92,57 @@ describe("buildOverviewSeries", () => {
     expect(minutesForKind(series.minutesByKind, "Agent")).toBe(2);
     expect(minutesForKind(series.minutesByKind, "WebRTC")).toBe(0);
   });
+
+  it("closes minutes on room_finished and ignores egress recorders", () => {
+    const start = Date.parse("2026-09-04T07:21:10.000Z");
+    const series = buildOverviewSeries(
+      [
+        {
+          eventType: "participant_joined",
+          roomName: "test-call",
+          participantIdentity: "agent-AJ_1",
+          kind: "agent",
+          region: null,
+          sipDirection: null,
+          at: start,
+        },
+        {
+          eventType: "participant_joined",
+          roomName: "test-call",
+          participantIdentity: "sip_918177938974",
+          kind: "sip",
+          region: null,
+          sipDirection: "outbound",
+          at: start + 1000,
+        },
+        {
+          eventType: "participant_joined",
+          roomName: "test-call",
+          participantIdentity: "EG_mixed",
+          kind: "webrtc",
+          infra: true,
+          region: null,
+          sipDirection: null,
+          at: start + 2000,
+        },
+        {
+          eventType: "room_finished",
+          roomName: "test-call",
+          participantIdentity: null,
+          kind: "webrtc",
+          region: null,
+          sipDirection: null,
+          at: start + 43_000,
+        },
+      ],
+      "24h",
+      start + 8 * 60 * 60 * 1000,
+    );
+    expect(minutesForKind(series.minutesByKind, "Agent")).toBe(0.7);
+    expect(minutesForKind(series.minutesByKind, "SIP")).toBe(0.7);
+    expect(minutesForKind(series.minutesByKind, "WebRTC")).toBe(0);
+    expect(series.topRegions).toEqual([]);
+  });
 });
 
 describe("minutesFromSessions", () => {

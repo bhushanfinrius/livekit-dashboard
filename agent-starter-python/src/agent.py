@@ -1835,25 +1835,11 @@ async def hangup_call(*, delay_seconds: float = 0.4):
             logger.error(f"Hangup error: {e}")
 
 
-_CLOSING_GREETING_INSTRUCTION = (
-    "The call is ending now. Say ONE brief, warm closing goodbye in the same language "
-    "the prospect has been using (English or Hinglish). Thank them for their time, "
-    "mention you will follow up if needed, and wish them a good day. "
-    "Do NOT ask any questions. Keep it under 15 seconds then stop."
-)
-
-
 async def _deliver_closing_greeting(session: AgentSession, room_name: str) -> None:
-    """[H13] Closing greeting with hard timeout — never hangs the call."""
-    try:
-        handle = session.generate_reply(instructions=_CLOSING_GREETING_INSTRUCTION)
-        await asyncio.wait_for(handle.wait_for_playout(), timeout=15.0)
-        await asyncio.sleep(0.5)
-        logger.info(f"[{room_name}] Closing greeting completed")
-    except asyncio.TimeoutError:
-        logger.warning(f"[{room_name}] Closing greeting timed out after 15s — proceeding to hangup")
-    except Exception as e:
-        logger.warning(f"[{room_name}] Closing greeting failed: {e}")
+    # Gemini Live already spoke from CALL_FLOW. Extra generate_reply races the
+    # Live session: "received server content but no active generation" then
+    # "generate_reply timed out waiting for generation_created".
+    logger.info(f"[{room_name}] Skipping extra closing generate_reply")
 
 
 def _had_conversation(state: CallState) -> bool:
@@ -2413,46 +2399,17 @@ async def setup_rag(session: AgentSession):
 
 # ════════════════════════════════════════════════════════════════════════════════
 # GREETING
+# Gemini Live already opens from CALL_FLOW ("Say only: Hello"). Do not call
+# generate_reply here — the plugin then logs "no active generation" and
+# "generate_reply timed out waiting for generation_created" while Hello already played.
 # ════════════════════════════════════════════════════════════════════════════════
-_GREETING_INSTRUCTION = (
-    'Say exactly one word to the caller: "Hello". '
-    "Do not introduce yourself. Do not add any other words. Then stop and wait for them to respond."
-)
-GREETING_MAX_ATTEMPTS = int(os.getenv("GREETING_MAX_ATTEMPTS", "3"))
-GREETING_PLAYOUT_TIMEOUT = float(os.getenv("GREETING_PLAYOUT_TIMEOUT", "20"))
-
-
 async def _greet_prospect(session: AgentSession, state: CallState) -> None:
     async with state._greeting_lock:
         if state._greeting_sent:
             return
-
-        logger.info(f"[{state.room_name}] Greeting prospect...")
-        for attempt in range(1, GREETING_MAX_ATTEMPTS + 1):
-            try:
-                delay = 1.0 if attempt == 1 else min(2.0 * attempt, 6.0)
-                await asyncio.sleep(delay)
-                handle = session.generate_reply(instructions=_GREETING_INSTRUCTION)
-                await asyncio.wait_for(
-                    handle.wait_for_playout(),
-                    timeout=GREETING_PLAYOUT_TIMEOUT,
-                )
-                state._greeting_sent = True
-                logger.info(f"[{state.room_name}] Greeting completed (attempt {attempt})")
-                return
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"[{state.room_name}] Greeting timed out "
-                    f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}) — Gemini may still be warming up"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[{state.room_name}] Greeting failed "
-                    f"(attempt {attempt}/{GREETING_MAX_ATTEMPTS}): {e}"
-                )
-
-        logger.error(
-            f"[{state.room_name}] Greeting failed after {GREETING_MAX_ATTEMPTS} attempts — call continues"
+        state._greeting_sent = True
+        logger.info(
+            f"[{state.room_name}] Greeting owned by CALL_FLOW — not calling generate_reply"
         )
 
 
@@ -2595,7 +2552,6 @@ async def _run_outbound_call_setup(ctx: JobContext, session: AgentSession, state
             return
 
         logger.info(f"[{state.room_name}] SIP participant joined: {sip_identity}")
-        await asyncio.sleep(1.0)
         await _greet_prospect(session, state)
         if VOICEMAIL_DETECTION_ENABLED:
             logger.info(f"[{state.room_name}] 🔍 Voicemail detection active (parallel STT, non-blocking)")

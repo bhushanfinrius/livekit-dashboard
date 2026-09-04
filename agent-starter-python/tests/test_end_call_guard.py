@@ -218,29 +218,16 @@ def test_agent_hello_detection_ignores_prospect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_greet_uses_generate_reply_not_say(monkeypatch) -> None:
-    import agent as agent_mod
-
-    async def _no_sleep(_seconds):
-        return None
-
-    monkeypatch.setattr(agent_mod.asyncio, "sleep", _no_sleep)
-
-    class FakeHandle:
-        async def wait_for_playout(self):
-            return None
-
+async def test_greet_does_not_call_generate_reply() -> None:
     class FakeSession:
         reply_calls = 0
-        last_instructions = None
 
         def say(self, text):
             raise AssertionError("Gemini Live must not use session.say()")
 
         def generate_reply(self, instructions=None):
             self.reply_calls += 1
-            self.last_instructions = instructions
-            return FakeHandle()
+            raise AssertionError("generate_reply races Gemini Live opening")
 
     state = FakeState()
     state.room_name = "test-room"
@@ -249,11 +236,10 @@ async def test_greet_uses_generate_reply_not_say(monkeypatch) -> None:
     session = FakeSession()
     await _greet_prospect(session, state)
     assert state._greeting_sent is True
-    assert session.reply_calls == 1
-    assert "Hello" in (session.last_instructions or "")
+    assert session.reply_calls == 0
 
     await _greet_prospect(session, state)
-    assert session.reply_calls == 1
+    assert session.reply_calls == 0
 
 
 def test_vertex_live_strips_gemini_api_keys(monkeypatch) -> None:

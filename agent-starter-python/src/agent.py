@@ -156,9 +156,10 @@ AGENT_MAX_CONCURRENT_JOBS = max(1, int(os.getenv("AGENT_MAX_CONCURRENT_JOBS", "1
 AGENT_NUM_IDLE_PROCESSES = max(0, int(os.getenv("AGENT_NUM_IDLE_PROCESSES", "5")))
 AGENT_LOAD_THRESHOLD = float(os.getenv("AGENT_LOAD_THRESHOLD", "1.0"))
 AGENT_JOB_MEMORY_WARN_MB = float(os.getenv("AGENT_JOB_MEMORY_WARN_MB", "800"))
-# Solvox campaign rooms are camp-* / test-*. Frontend concurrency=3 still opened
-# 3 rooms per lead; this keeps only the oldest N campaign rooms.
+# Solvox camp-{campaign8}-{lead8}-* rooms. Frontend owns concurrency.
+# We only drop extra rooms for the SAME lead so the phone rings once.
 CAMPAIGN_MAX_CONCURRENT = max(1, int(os.getenv("CAMPAIGN_MAX_CONCURRENT", "3")))
+_CAMP_ROOM_RE = re.compile(r"^camp-([0-9a-f]{8})-([0-9a-f]{8})-", re.I)
 
 VOICEMAIL_DETECTION_ENABLED = os.getenv(
     "VOICEMAIL_DETECTION_ENABLED", "true"
@@ -641,6 +642,15 @@ def _is_burst_dial_room(room_name: str) -> bool:
     return bool(re.match(r"^(camp|test)-", room_name or "", re.I))
 
 
+def campaign_lead_key(room_name: str, lead_id: str = "") -> Optional[tuple[str, str]]:
+    match = _CAMP_ROOM_RE.match(room_name or "")
+    if not match:
+        return None
+    campaign = match.group(1).lower()
+    lead = (lead_id or "").replace("-", "").strip()[:8].lower() or match.group(2).lower()
+    return campaign, lead
+
+
 def _campaign_created_at(room) -> int:
     ms = getattr(room, "creation_time_ms", 0) or 0
     if ms:
@@ -650,19 +660,45 @@ def _campaign_created_at(room) -> int:
 
 
 def campaign_room_allowed_from_list(
-    room_name: str, rooms, cap: Optional[int] = None
+    room_name: str,
+    rooms,
+    cap: Optional[int] = None,
+    lead_id: str = "",
+    now_ms: Optional[int] = None,
+    stale_empty_ms: int = 60_000,
 ) -> bool:
-    """Keep the oldest campaign rooms up to the cap; drop extra camp-/test- jobs."""
-    if not _is_burst_dial_room(room_name):
+    """Keep the newest room for this lead. Never block test/Talk or a new lead.
+
+    `cap` is unused: Solvox frontend owns how many leads are dialed.
+    """
+    del cap, stale_empty_ms
+    key = campaign_lead_key(room_name, lead_id)
+    if key is None:
         return True
-    limit = CAMPAIGN_MAX_CONCURRENT if cap is None else cap
-    camp = [room for room in rooms if _is_burst_dial_room(getattr(room, "name", ""))]
-    names = {getattr(room, "name", "") for room in camp}
-    if room_name not in names:
-        return len(camp) < limit
-    camp.sort(key=lambda room: (_campaign_created_at(room), getattr(room, "name", "")))
-    keep = {getattr(room, "name", "") for room in camp[:limit]}
-    return room_name in keep
+    clock = int(time.time() * 1000) if now_ms is None else now_ms
+    same = [
+        room
+        for room in rooms
+        if campaign_lead_key(getattr(room, "name", "")) == key
+    ]
+    if not any(getattr(room, "name", "") == room_name for room in same):
+        same.append(
+            type(
+                "_Current",
+                (),
+                {
+                    "name": room_name,
+                    "creation_time": clock / 1000,
+                    "creation_time_ms": clock,
+                    "num_participants": 1,
+                },
+            )()
+        )
+    newest = max(
+        same,
+        key=lambda room: (_campaign_created_at(room), getattr(room, "name", "")),
+    )
+    return getattr(newest, "name", "") == room_name
 
 
 async def _list_live_rooms():
@@ -676,18 +712,21 @@ async def _list_live_rooms():
         await lkapi.aclose()
 
 
-async def campaign_room_allowed(room_name: str) -> bool:
-    if not _is_burst_dial_room(room_name):
+async def campaign_room_allowed(room_name: str, lead_id: str = "") -> bool:
+    if campaign_lead_key(room_name, lead_id) is None:
         return True
     try:
         rooms = await _list_live_rooms()
     except Exception as exc:
         logger.warning("Could not list rooms for campaign cap: %s", exc)
         return True
-    return campaign_room_allowed_from_list(room_name, rooms)
+    return campaign_room_allowed_from_list(room_name, rooms, lead_id=lead_id)
 
 
 async def _delete_extra_campaign_room(room_name: str) -> None:
+    if campaign_lead_key(room_name) is None:
+        logger.warning("[%s] Refusing to delete non-campaign room", room_name)
+        return
     from livekit.protocol import room as room_proto
 
     lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
@@ -2897,13 +2936,13 @@ async def entrypoint(ctx: JobContext):
     )
 
     state = CallState(ctx)
-    if not await campaign_room_allowed(state.room_name):
+    if not await campaign_room_allowed(state.room_name, state.lead_id):
         logger.warning(
-            "[%s] Campaign concurrency cap (%s) — dropping extra room",
+            "[%s] Extra room for this lead — keeping the newest attempt so the phone rings once",
             state.room_name,
-            CAMPAIGN_MAX_CONCURRENT,
         )
         await _delete_extra_campaign_room(state.room_name)
+        ctx.shutdown("campaign duplicate room")
         return
     _ACTIVE_CALLS[state.room_name] = state
     _deck_transcript_url_ok()

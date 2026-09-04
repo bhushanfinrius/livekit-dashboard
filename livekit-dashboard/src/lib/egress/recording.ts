@@ -80,9 +80,20 @@ export function campaignMaxConcurrent() {
 
 type CampaignRoomLike = {
   name: string;
+  numParticipants?: number;
   creationTime?: bigint | number;
   creationTimeMs?: bigint | number;
 };
+
+const CAMP_ROOM_RE = /^camp-([0-9a-f]{8})-([0-9a-f]{8})-/i;
+
+export function campaignLeadKey(roomName: string, leadId = "") {
+  const match = CAMP_ROOM_RE.exec(roomName.trim());
+  if (!match) return null;
+  const campaign = match[1].toLowerCase();
+  const lead = (leadId.replace(/-/g, "").trim().slice(0, 8) || match[2]).toLowerCase();
+  return { campaign, lead };
+}
 
 function campaignCreatedAt(room: CampaignRoomLike) {
   if (room.creationTimeMs != null && Number(room.creationTimeMs) > 0) {
@@ -94,23 +105,23 @@ function campaignCreatedAt(room: CampaignRoomLike) {
   return 0;
 }
 
-/** Keep the oldest campaign rooms up to the cap; extra camp-/test- rooms are rejected. */
-export function campaignRoomAllowed(roomName: string, rooms: CampaignRoomLike[]) {
+/** Keep the newest room for this lead. Never block test/Talk or a new lead. */
+export function campaignRoomAllowed(roomName: string, rooms: CampaignRoomLike[], nowMs = Date.now()) {
   const name = roomName.trim();
-  if (!isBurstDialRoom(name)) return true;
-  const cap = campaignMaxConcurrent();
-  const camp = rooms.filter((room) => isBurstDialRoom(room.name));
-  if (!camp.some((room) => room.name === name)) {
-    return camp.length < cap;
+  const key = campaignLeadKey(name);
+  if (!key) return true;
+  const same = rooms.filter((room) => {
+    const other = campaignLeadKey(room.name);
+    return other?.campaign === key.campaign && other.lead === key.lead;
+  });
+  if (!same.some((room) => room.name === name)) {
+    same.push({ name, creationTimeMs: nowMs, numParticipants: 1 });
   }
-  const keep = [...camp]
-    .sort((a, b) => {
-      const created = campaignCreatedAt(a) - campaignCreatedAt(b);
-      return created !== 0 ? created : a.name.localeCompare(b.name);
-    })
-    .slice(0, cap)
-    .map((room) => room.name);
-  return keep.includes(name);
+  const newest = [...same].sort((a, b) => {
+    const created = campaignCreatedAt(a) - campaignCreatedAt(b);
+    return created !== 0 ? created : a.name.localeCompare(b.name);
+  }).at(-1);
+  return newest?.name === name;
 }
 
 /**
@@ -134,12 +145,10 @@ export async function campaignConcurrencyError(
   roomName: string,
 ): Promise<string | null> {
   const name = roomName.trim();
-  if (!isBurstDialRoom(name)) return null;
+  if (!campaignLeadKey(name)) return null;
   const rooms = await livekit.rooms.list();
   if (campaignRoomAllowed(name, rooms)) return null;
-  const liveCamp = rooms.filter((room) => isBurstDialRoom(room.name)).length;
-  const cap = campaignMaxConcurrent();
-  return `Campaign already has ${liveCamp} live rooms (cap ${cap}). Stop extra dials in Solvox or wait for a room to end.`;
+  return "Another room for this lead is already live. Extra Solvox retry will not be dialed.";
 }
 
 export type RecordingStartResult =

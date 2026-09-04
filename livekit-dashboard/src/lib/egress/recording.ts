@@ -68,12 +68,78 @@ export function autoTrackEgressOutput(agentName?: string) {
   });
 }
 
-/** Single source of truth for the RoomEgress attached at room creation. */
-export function roomEgressConfig(agentName?: string) {
+/** Campaign / test dials: Solvox names rooms camp-… / test-…. */
+export function isBurstDialRoom(roomName: string) {
+  return /^(camp|test)-/i.test(roomName.trim());
+}
+
+export function campaignMaxConcurrent() {
+  const raw = Number(process.env.CAMPAIGN_MAX_CONCURRENT ?? "3");
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+}
+
+type CampaignRoomLike = {
+  name: string;
+  creationTime?: bigint | number;
+  creationTimeMs?: bigint | number;
+};
+
+function campaignCreatedAt(room: CampaignRoomLike) {
+  if (room.creationTimeMs != null && Number(room.creationTimeMs) > 0) {
+    return Number(room.creationTimeMs);
+  }
+  if (room.creationTime != null && Number(room.creationTime) > 0) {
+    return Number(room.creationTime) * 1000;
+  }
+  return 0;
+}
+
+/** Keep the oldest campaign rooms up to the cap; extra camp-/test- rooms are rejected. */
+export function campaignRoomAllowed(roomName: string, rooms: CampaignRoomLike[]) {
+  const name = roomName.trim();
+  if (!isBurstDialRoom(name)) return true;
+  const cap = campaignMaxConcurrent();
+  const camp = rooms.filter((room) => isBurstDialRoom(room.name));
+  if (!camp.some((room) => room.name === name)) {
+    return camp.length < cap;
+  }
+  const keep = [...camp]
+    .sort((a, b) => {
+      const created = campaignCreatedAt(a) - campaignCreatedAt(b);
+      return created !== 0 ? created : a.name.localeCompare(b.name);
+    })
+    .slice(0, cap)
+    .map((room) => room.name);
+  return keep.includes(name);
+}
+
+/**
+ * Chrome room-composite plus per-track jobs will 503 a single egress worker when
+ * a campaign opens several rooms at once. Burst dials get tracks only.
+ */
+export function roomEgressConfig(agentName?: string, roomName?: string) {
+  if (roomName && isBurstDialRoom(roomName)) {
+    return new RoomEgress({
+      tracks: autoTrackEgressOutput(agentName),
+    });
+  }
   return new RoomEgress({
     room: mixedEgressRequest(agentName),
     tracks: autoTrackEgressOutput(agentName),
   });
+}
+
+export async function campaignConcurrencyError(
+  livekit: ProjectLiveKit,
+  roomName: string,
+): Promise<string | null> {
+  const name = roomName.trim();
+  if (!isBurstDialRoom(name)) return null;
+  const rooms = await livekit.rooms.list();
+  if (campaignRoomAllowed(name, rooms)) return null;
+  const liveCamp = rooms.filter((room) => isBurstDialRoom(room.name)).length;
+  const cap = campaignMaxConcurrent();
+  return `Campaign already has ${liveCamp} live rooms (cap ${cap}). Stop extra dials in Solvox or wait for a room to end.`;
 }
 
 export type RecordingStartResult =
@@ -105,7 +171,7 @@ export async function ensureRoomWithAutoTrackEgress(
   const configError = recordingOutputError();
   if (configError) return { started: false, reason: "unconfigured", error: configError };
   try {
-    await livekit.rooms.create({ name, egress: roomEgressConfig(agentName) });
+    await livekit.rooms.create({ name, egress: roomEgressConfig(agentName, name) });
     return { started: true, reason: "started" };
   } catch (error) {
     if (isAlreadyExistsError(error)) return { started: false, reason: "already-active" };

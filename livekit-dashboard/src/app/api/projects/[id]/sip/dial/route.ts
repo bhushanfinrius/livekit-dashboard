@@ -5,7 +5,7 @@ import {
   requireProjectLiveKit,
 } from "@/lib/api/project";
 import { sipDialSchema } from "@/lib/validators/sip";
-import { ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
+import { campaignConcurrencyError, ensureRoomWithAutoTrackEgress } from "@/lib/egress/recording";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +26,8 @@ export async function POST(request: Request, context: RouteContext) {
   if (access.error) return access.error;
 
   try {
+    const busy = await campaignConcurrencyError(access.livekit, parsed.data.roomName);
+    if (busy) return jsonError(busy, 429, "BUSY");
     const roomResult = await ensureRoomWithAutoTrackEgress(access.livekit, parsed.data.roomName);
     if (roomResult.reason === "error" || roomResult.reason === "unconfigured") {
       console.error("[recording:auto-track]", parsed.data.roomName, roomResult.error ?? roomResult.reason);

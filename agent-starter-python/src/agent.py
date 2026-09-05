@@ -2,7 +2,7 @@
 Mahindra car scraping agent — OPTIMIZED v8.0
 Fixes applied vs v7.2:
   [C1]  Vertex + GCS share one SA file (livekit-storage.json)
-  [C2]  Recording stopped + URL resolved before call_ended; room deleted last
+  [C2]  call_ended is sent before recording finalize so Solvox can dial the next lead
   [C3]  Voicemail via parallel STT (non-blocking); greet first, hang up on VM confirm
   [C4]  rag_retrieve wrapped in asyncio.to_thread — no event-loop blocking
   [C5]  analyse_call thread-pool timeout reduced + ThreadPoolExecutor sized
@@ -23,43 +23,45 @@ Fixes applied vs v7.2:
   [M22] AgentSession closed before room delete to reduce engine-is-closed log noise
 """
 
-import logging
 import asyncio
+import concurrent.futures
+import datetime
+import json
+import logging
 import os
 import re
 import sys
-import json
-import time
 import tempfile
+import time
 import uuid
-import datetime
-import concurrent.futures
+from contextlib import asynccontextmanager, suppress
 from typing import Optional
-from dotenv import load_dotenv
-import httpx
 
+import chromadb
+import httpx
+from dotenv import load_dotenv
+from google.genai import types as genai_types
 from livekit import api, rtc
 from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
-    JobContext,
-    JobExecutorType,
-    cli,
-    room_io,
-    get_job_context,
-    llm,
     AudioConfig,
     BackgroundAudioPlayer,
     BuiltinAudioClip,
     ChatContext,
     ChatMessage,
-    function_tool,
+    JobContext,
+    JobExecutorType,
     RunContext,
+    cli,
+    function_tool,
+    get_job_context,
+    llm,
+    room_io,
 )
+from livekit.agents.types import APIConnectOptions
 from livekit.plugins import google
-from google.genai import types as genai_types
-import chromadb
 
 logger = logging.getLogger("CTF-Agent")
 logger.setLevel(logging.INFO)
@@ -75,9 +77,7 @@ def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in ("1", "true", "yes")
 
 
-BACKEND_BASE_URL = (
-    os.getenv("BACKEND_BASE_URL") or "https://uat-api.solvox.ai"
-).strip()
+BACKEND_BASE_URL = (os.getenv("BACKEND_BASE_URL") or "https://api.solvox.ai").strip()
 _webhook_raw = (
     os.getenv("BACKEND_WEBHOOK_URL") or os.getenv("BACKEND_WEBHOOK_URLS") or ""
 ).strip()
@@ -170,6 +170,11 @@ VOICEMAIL_DETECTION_ENABLED = os.getenv(
 SIP_JOIN_TIMEOUT = float(
     os.getenv("SIP_JOIN_TIMEOUT") or os.getenv("AMD_SIP_JOIN_TIMEOUT") or "20"
 )
+# How long to wait for the callee to actually pick up after the SIP
+# participant appears (join is not the same as answer).
+SIP_ANSWER_TIMEOUT = float(os.getenv("SIP_ANSWER_TIMEOUT") or "45")
+_SIP_ANSWERED_STATUSES = frozenset({"active", "automation"})
+_SIP_PRE_ANSWER_STATUSES = frozenset({"dialing", "ringing", "hangup"})
 BACKGROUND_AUDIO_ENABLED = os.getenv("BACKGROUND_AUDIO_ENABLED", "true").lower() in (
     "1",
     "true",
@@ -177,6 +182,10 @@ BACKGROUND_AUDIO_ENABLED = os.getenv("BACKGROUND_AUDIO_ENABLED", "true").lower()
 )
 BACKGROUND_AUDIO_VOLUME = float(os.getenv("BACKGROUND_AUDIO_VOLUME", "0.8"))
 RECORDING_FINALIZE_TIMEOUT = float(os.getenv("RECORDING_FINALIZE_TIMEOUT", "120"))
+# Keep post-call work inside LiveKit's ~15s entrypoint drain window.
+RECORDING_COOLDOWN_TIMEOUT = float(os.getenv("RECORDING_COOLDOWN_TIMEOUT", "3"))
+SESSION_CLOSE_TIMEOUT = float(os.getenv("SESSION_CLOSE_TIMEOUT", "2"))
+CALLEE_LEAVE_GRACE_SECONDS = float(os.getenv("CALLEE_LEAVE_GRACE_SECONDS", "0.5"))
 _VOICEMAIL_AGENT_NOTES = "Voice mail detected"
 
 MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "300"))
@@ -317,6 +326,13 @@ def _deck_transcript_url_ok() -> bool:
     if "localhost" in url or "127.0.0.1" in url:
         logger.error(
             "[deck-transcript] DECK_TRANSCRIPT_URL=%s cannot work from Docker. "
+            "Use http://deck:3000/api/projects/<id>/sessions/transcripts",
+            DECK_TRANSCRIPT_URL,
+        )
+        return False
+    if "host.docker.internal" in url:
+        logger.warning(
+            "[deck-transcript] DECK_TRANSCRIPT_URL=%s cannot reach Compose deck. "
             "Use http://deck:3000/api/projects/<id>/sessions/transcripts",
             DECK_TRANSCRIPT_URL,
         )
@@ -564,13 +580,22 @@ async def check_credits_allowed(agent_name: str) -> bool:
 # ════════════════════════════════════════════════════════════════════════════════
 # SIP DISCONNECT HELPER
 # ════════════════════════════════════════════════════════════════════════════════
+@asynccontextmanager
+async def _livekit_api():
+    lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    try:
+        yield lkapi
+    finally:
+        with suppress(Exception):
+            await lkapi.aclose()
+
+
 async def disconnect_sip_participant(room_name: str, identity: str):
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        await lkapi.room.remove_participant(
-            api.RoomParticipantIdentity(room=room_name, identity=identity)
-        )
-        await lkapi.aclose()
+        async with _livekit_api() as lkapi:
+            await lkapi.room.remove_participant(
+                api.RoomParticipantIdentity(room=room_name, identity=identity)
+            )
         logger.info(f"[{room_name}] SIP participant '{identity}' removed")
     except Exception as e:
         logger.error(f"[{room_name}] Failed to remove SIP participant: {e}")
@@ -584,6 +609,47 @@ def _is_sip_callee_participant(participant: rtc.RemoteParticipant) -> bool:
         return True
     digits = re.sub(r"\D", "", participant.identity or "")
     return len(digits) >= 10
+
+
+def _participant_attrs(participant) -> dict[str, str]:
+    raw = getattr(participant, "attributes", None) or {}
+    if hasattr(raw, "items"):
+        return {str(key): str(value) for key, value in raw.items()}
+    return {}
+
+
+def sip_call_status(participant) -> str:
+    attrs = _participant_attrs(participant)
+    return (
+        (
+            attrs.get("sip.callStatus")
+            or attrs.get("sip_callStatus")
+            or attrs.get("callStatus")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+
+def sip_call_is_answered(participant) -> bool:
+    """True only after the callee picks up (sip.callStatus=active). Join != answer."""
+    return sip_call_status(participant) in _SIP_ANSWERED_STATUSES
+
+
+def sip_leave_is_no_answer(state: "CallState") -> bool:
+    return not bool(getattr(state, "connected", False))
+
+
+def resolved_call_outcome(state: "CallState", analysis_outcome: str) -> str:
+    if (
+        getattr(state, "amd_voicemail", False)
+        and getattr(state, "forced_outcome", None) == "voicemail"
+    ):
+        return "voicemail"
+    if not getattr(state, "connected", False):
+        return "no_answer"
+    return _normalize_outcome(analysis_outcome)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -650,7 +716,9 @@ def campaign_lead_key(room_name: str, lead_id: str = "") -> Optional[tuple[str, 
     if not match:
         return None
     campaign = match.group(1).lower()
-    lead = (lead_id or "").replace("-", "").strip()[:8].lower() or match.group(2).lower()
+    lead = (lead_id or "").replace("-", "").strip()[:8].lower() or match.group(
+        2
+    ).lower()
     return campaign, lead
 
 
@@ -689,16 +757,22 @@ def campaign_slot_key(
     if parsed is None:
         return None
     meta = _parse_meta(metadata)
-    phone = _phone_digits(contact_number) or _phone_digits(str(meta.get("contact_number") or ""))
+    phone = _phone_digits(contact_number) or _phone_digits(
+        str(meta.get("contact_number") or "")
+    )
     if phone:
         return ("phone", phone)
-    lid = (lead_id or str(meta.get("lead_id") or "")).replace("-", "").strip()[:8].lower()
+    lid = (
+        (lead_id or str(meta.get("lead_id") or "")).replace("-", "").strip()[:8].lower()
+    )
     if lid:
         return ("lead", parsed[0], lid)
     return ("lead", parsed[0], parsed[1])
 
 
-def campaign_room_slot(room, lead_id: str = "", contact_number: str = "") -> Optional[tuple]:
+def campaign_room_slot(
+    room, lead_id: str = "", contact_number: str = ""
+) -> Optional[tuple]:
     name = getattr(room, "name", "") or ""
     meta = _parse_meta(getattr(room, "metadata", "") or "")
     return campaign_slot_key(
@@ -720,7 +794,9 @@ def campaign_room_allowed_from_list(
 ) -> bool:
     """Keep the newest room for this phone/lead. Other numbers run at the same time."""
     del cap, stale_empty_ms
-    current = next((room for room in rooms if getattr(room, "name", "") == room_name), None)
+    current = next(
+        (room for room in rooms if getattr(room, "name", "") == room_name), None
+    )
     if current is not None:
         key = campaign_room_slot(current, lead_id, contact_number)
     else:
@@ -757,12 +833,9 @@ def campaign_room_allowed_from_list(
 async def _list_live_rooms():
     from livekit.protocol import room as room_proto
 
-    lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-    try:
+    async with _livekit_api() as lkapi:
         result = await lkapi.room.list_rooms(room_proto.ListRoomsRequest())
         return list(result.rooms)
-    finally:
-        await lkapi.aclose()
 
 
 async def campaign_room_allowed(
@@ -795,14 +868,12 @@ async def _delete_extra_campaign_room(room_name: str) -> None:
         return
     from livekit.protocol import room as room_proto
 
-    lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     try:
-        await lkapi.room.delete_room(room_proto.DeleteRoomRequest(room=room_name))
+        async with _livekit_api() as lkapi:
+            await lkapi.room.delete_room(room_proto.DeleteRoomRequest(room=room_name))
         logger.info("[%s] Deleted extra campaign room (over cap)", room_name)
     except Exception as exc:
         logger.info("[%s] Could not delete extra campaign room: %s", room_name, exc)
-    finally:
-        await lkapi.aclose()
 
 
 def build_room_egress(gcs_creds_json: str, room_name: str = ""):
@@ -1030,13 +1101,10 @@ async def start_mixed_egress(room_name: str, gcs_creds_json: str) -> Optional[st
         if _egress_circuit_open():
             return None
         try:
-            lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-            try:
+            async with _livekit_api() as lkapi:
                 result = await lkapi.egress.start_room_composite_egress(
                     build_mixed_egress_request(gcs_creds_json, room_name)
                 )
-            finally:
-                await lkapi.aclose()
             logger.info(
                 f"[{room_name}] 🎬 Mixed egress started — egress_id={result.egress_id} → "
                 f"gs://{GCS_BUCKET_NAME}/{_mixed_egress_filepath(room_name)}"
@@ -1069,8 +1137,7 @@ async def start_track_egress(
         f"recordings/{AGENT_NAME}/{room_name}/{identity}-{{time}}{RECORDING_FILE_EXT}"
     )
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        try:
+        async with _livekit_api() as lkapi:
             result = await lkapi.egress.start_track_egress(
                 egress_proto.TrackEgressRequest(
                     room_name=room_name,
@@ -1081,8 +1148,6 @@ async def start_track_egress(
                     ),
                 )
             )
-        finally:
-            await lkapi.aclose()
         logger.info(
             f"[{room_name}] 🎬 Track egress started — egress_id={result.egress_id} "
             f"track={track_id} identity={identity}"
@@ -1136,6 +1201,10 @@ async def _start_manual_egress(
 
     room.on("track_published", _on_remote_track)
     room.on("local_track_published", _on_local_track)
+    state._egress_room_handlers = [
+        (room, "track_published", _on_remote_track),
+        (room, "local_track_published", _on_local_track),
+    ]
 
     if AUTO_TRACK_EGRESS_ENABLED and not _egress_circuit_open():
         # Snapshot immediately so the greeting is not lost, then keep listening
@@ -1223,19 +1292,17 @@ async def ensure_room_recording(room_name: str) -> tuple[bool, bool]:
 
     from livekit.protocol import room as room_proto
 
-    lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     try:
-        await lkapi.room.create_room(
-            room_proto.CreateRoomRequest(
-                name=room_name,
-                egress=build_room_egress(gcs_creds_json, room_name),
+        async with _livekit_api() as lkapi:
+            await lkapi.room.create_room(
+                room_proto.CreateRoomRequest(
+                    name=room_name,
+                    egress=build_room_egress(gcs_creds_json, room_name),
+                )
             )
-        )
         logger.info(f"[{room_name}] 🎬 Room egress config submitted")
     except Exception as e:
         logger.info(f"[{room_name}] create_room for egress: {e}")
-    finally:
-        await lkapi.aclose()
 
     # CreateRoom is a no-op on an existing room, so trust list_egress, not the call above.
     jobs = await _list_room_egress(room_name)
@@ -1254,16 +1321,15 @@ async def stop_room_egress(egress_id: str, room_name: str):
     if not egress_id:
         return
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         from livekit.protocol import egress as egress_proto
 
-        await lkapi.egress.stop_egress(
-            egress_proto.StopEgressRequest(egress_id=egress_id)
-        )
-        await lkapi.aclose()
+        async with _livekit_api() as lkapi:
+            await lkapi.egress.stop_egress(
+                egress_proto.StopEgressRequest(egress_id=egress_id)
+            )
         logger.info(f"[{room_name}] ⏹ Egress stopped — egress_id={egress_id}")
     except Exception as e:
-        logger.error(f"[{room_name}] Failed to stop egress: {e}")
+        logger.warning(f"[{room_name}] Failed to stop egress: {e}")
 
 
 _EGRESS_DONE_STATUSES = {
@@ -1274,15 +1340,30 @@ _EGRESS_DONE_STATUSES = {
 }
 
 
-async def _list_room_egress(room_name: str) -> list:
+def _egress_status_name(item) -> str:
+    status = getattr(item, "status", None)
+    if isinstance(status, str):
+        return status
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         from livekit.protocol import egress as egress_proto
 
-        result = await lkapi.egress.list_egress(
-            egress_proto.ListEgressRequest(room_name=room_name)
-        )
-        await lkapi.aclose()
+        return egress_proto.EgressStatus.Name(status)
+    except Exception:
+        return str(status or "")
+
+
+def egress_job_is_terminal(item) -> bool:
+    return _egress_status_name(item) in _EGRESS_DONE_STATUSES
+
+
+async def _list_room_egress(room_name: str) -> list:
+    try:
+        from livekit.protocol import egress as egress_proto
+
+        async with _livekit_api() as lkapi:
+            result = await lkapi.egress.list_egress(
+                egress_proto.ListEgressRequest(room_name=room_name)
+            )
         return list(result.items)
     except Exception as e:
         logger.warning(f"[{room_name}] Could not list egress jobs: {e}")
@@ -1291,13 +1372,12 @@ async def _list_room_egress(room_name: str) -> list:
 
 async def _get_egress_info(egress_id: str, room_name: str):
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         from livekit.protocol import egress as egress_proto
 
-        result = await lkapi.egress.list_egress(
-            egress_proto.ListEgressRequest(egress_id=egress_id)
-        )
-        await lkapi.aclose()
+        async with _livekit_api() as lkapi:
+            result = await lkapi.egress.list_egress(
+                egress_proto.ListEgressRequest(egress_id=egress_id)
+            )
         if result.items:
             return result.items[0]
     except Exception as e:
@@ -1403,9 +1483,7 @@ async def _wait_for_egress_complete(
             await asyncio.sleep(2)
             continue
 
-        from livekit.protocol import egress as egress_proto
-
-        status = egress_proto.EgressStatus.Name(item.status)
+        status = _egress_status_name(item)
         object_paths = _egress_object_paths(item)
 
         if status == "EGRESS_COMPLETE":
@@ -1414,8 +1492,8 @@ async def _wait_for_egress_complete(
                 + (f" paths={object_paths}" if object_paths else "")
             )
             return object_paths
-        if status in _EGRESS_DONE_STATUSES - {"EGRESS_COMPLETE"}:
-            logger.error(
+        if egress_job_is_terminal(item):
+            logger.warning(
                 f"[{room_name}] Egress finished with status={status} id={egress_id}"
             )
             return []
@@ -1897,6 +1975,7 @@ class CallState:
 
         # [H7] Single lock to prevent double call_ended
         self._end_lock: asyncio.Lock = asyncio.Lock()
+        self._call_ended_sent: bool = False
 
         self._max_duration_task: Optional[asyncio.Task] = None
         # [C2] Keep hard ref to recording task so GC doesn't collect it
@@ -1908,6 +1987,7 @@ class CallState:
         self._greeting_sent: bool = False
         self._greeting_lock: asyncio.Lock = asyncio.Lock()
         self._background_audio: Optional[BackgroundAudioPlayer] = None
+        self._egress_room_handlers: list = []
         self._vm_text_buffer: str = ""
         self._vm_hangup_scheduled: bool = False
         self.hangup_reason: str = ""
@@ -2003,8 +2083,6 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
         if state._recording_finalized:
             return
         try:
-            from livekit.protocol import egress as egress_proto
-
             items = await _list_room_egress(state.room_name)
             if not items:
                 logger.warning(f"[{state.room_name}] No egress jobs found for room")
@@ -2014,8 +2092,7 @@ async def _finalize_recording(state: CallState, *, emit_webhook: bool = True) ->
                 *[
                     stop_room_egress(item.egress_id, state.room_name)
                     for item in items
-                    if egress_proto.EgressStatus.Name(item.status)
-                    not in _EGRESS_DONE_STATUSES
+                    if not egress_job_is_terminal(item)
                 ]
             )
 
@@ -2076,19 +2153,6 @@ async def _handle_call_end(state: CallState):
 
     _cancel_max_duration_timer(state)
 
-    await _await_recording_start(state)
-
-    if state.recording_active and not state._recording_finalized:
-        try:
-            await asyncio.wait_for(
-                _finalize_recording(state),
-                timeout=RECORDING_FINALIZE_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"[{state.room_name}] Recording finalize timed out ({RECORDING_FINALIZE_TIMEOUT:.0f}s)"
-            )
-
     logger.info(f"[{state.room_name}] Call ended — running analysis...")
 
     ctx = get_job_context()
@@ -2130,7 +2194,8 @@ async def _handle_call_end(state: CallState):
             callee_hung_up=state.callee_hung_up,
             live_voicemail_detected=state.amd_voicemail,
         )
-        outcome = _normalize_outcome(analysis.get("outcome"))
+        outcome = resolved_call_outcome(state, analysis.get("outcome") or "")
+        analysis["outcome"] = outcome
 
     if outcome in ("no_answer", "voicemail"):
         duration = 0
@@ -2159,13 +2224,33 @@ async def _handle_call_end(state: CallState):
             "recording_urls": state.recording_urls,
         }
     )
+    setattr(state, "_call_ended_sent", True)
 
     logger.info(f"[{state.room_name}] CALL_ENDED recording_url = {state.recording_url}")
     logger.info(
         f"[{state.room_name}] ✅ call_ended webhook sent — "
         f"outcome={outcome} duration={duration}s "
-        f"recording={'yes' if state.recording_url else 'no'}"
+        f"recording={'yes' if state.recording_url else 'no'} "
+        f"(finalize follows so the next lead can dial)"
     )
+
+    await _await_recording_start(state, timeout=min(2.0, RECORDING_COOLDOWN_TIMEOUT))
+    if state.recording_active and not state._recording_finalized:
+        finalize_task = asyncio.create_task(
+            _finalize_recording(state),
+            name=f"finalize-{state.room_name[:24]}",
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(finalize_task),
+                timeout=RECORDING_COOLDOWN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{state.room_name}] Recording finalize still running after "
+                f"{RECORDING_COOLDOWN_TIMEOUT:.0f}s — job will not wait"
+            )
+            state._recording_task = finalize_task
 
 
 async def _complete_call_shutdown(
@@ -2192,12 +2277,13 @@ async def _complete_call_shutdown(
                 f"[{state.room_name}] hangup reason={state.hangup_reason or reason or 'unknown'} "
                 f"hangup_now={hangup_now}"
             )
-            if hangup_now:
-                await hangup_call(delay_seconds=delay_seconds)
+            # Webhooks + session close first. DeleteRoom last so LiveKit's 15s
+            # entrypoint drain timer does not start while we still need the job.
             await _handle_call_end(state)
             await _close_agent_session(state)
-            if not hangup_now:
-                await hangup_call(delay_seconds=delay_seconds)
+            await _close_background_audio(state)
+            _detach_recording_listeners(state)
+            await hangup_call(delay_seconds=delay_seconds)
             logger.info(f"[{state.room_name}] ✅ Call shutdown complete")
         except Exception as e:
             logger.error(f"[{state.room_name}] Shutdown failed: {e}", exc_info=True)
@@ -2289,6 +2375,118 @@ async def rag_retrieve(query: str, n_results: int = 5) -> str:
 # ════════════════════════════════════════════════════════════════════════════════
 # HANGUP
 # ════════════════════════════════════════════════════════════════════════════════
+def _is_gemini_session_gone(error) -> bool:
+    """True when Gemini Live is dead (GoAway / 1006) and must not reconnect."""
+    if error is None:
+        return False
+    inner = getattr(error, "error", None)
+    parts = [str(error)]
+    if inner is not None and inner is not error:
+        parts.append(str(inner))
+    text = " ".join(parts).lower()
+    return any(
+        token in text
+        for token in (
+            "1006",
+            "abnormal closure",
+            "disconnection soon",
+            "goaway",
+            "go_away",
+            "no close frame",
+            "liveservergoaway",
+        )
+    )
+
+
+def _should_hangup_session_event(event) -> bool:
+    """Hang up SIP when Gemini dies. Ignore our own session.aclose()."""
+    if event is None:
+        return False
+    if _is_gemini_session_gone(event) or _is_gemini_session_gone(
+        getattr(event, "error", None)
+    ):
+        return True
+    reason = getattr(event, "reason", None)
+    value = getattr(reason, "value", reason)
+    return str(value or "").lower() in {"error", "job_shutdown"}
+
+
+_GEMINI_GOAWAY_PATCHED = False
+
+
+def _install_gemini_goaway_hangup() -> None:
+    """GoAway normally reconnects for ~10 min. Close the Live socket instead.
+
+    UNVERIFIED: Please check docs.livekit.io — RealtimeSession._handle_go_away
+    is a private plugin hook.
+    """
+    global _GEMINI_GOAWAY_PATCHED
+    if _GEMINI_GOAWAY_PATCHED:
+        return
+    try:
+        from livekit.plugins.google.realtime.realtime_api import RealtimeSession
+    except Exception as exc:
+        logger.warning("Could not patch Gemini GoAway handler: %s", exc)
+        return
+
+    original = RealtimeSession._handle_go_away
+
+    def _handle_go_away(self, go_away) -> None:
+        logger.warning(
+            "Gemini GoAway — closing Live session instead of reconnecting. Time left: %s",
+            getattr(go_away, "time_left", "?"),
+        )
+        try:
+            if not getattr(self._msg_ch, "closed", True):
+                self._msg_ch.close()
+        except Exception:
+            pass
+        original(self, go_away)
+
+    RealtimeSession._handle_go_away = _handle_go_away
+    _GEMINI_GOAWAY_PATCHED = True
+
+
+def _attach_session_lifecycle_handlers(
+    session: AgentSession, state: "CallState"
+) -> None:
+    @session.on("close")
+    def _on_session_close(ev) -> None:
+        if state._call_end_handled or state._graceful_closing:
+            return
+        if not _should_hangup_session_event(ev):
+            return
+        logger.warning(
+            "[%s] Session closed (%s) — hanging up so the campaign slot frees",
+            state.room_name,
+            getattr(getattr(ev, "reason", None), "value", ev),
+        )
+        asyncio.create_task(
+            _complete_call_shutdown(
+                state, hangup_now=True, reason="gemini_session_ended"
+            )
+        )
+
+    @session.on("error")
+    def _on_session_error(ev) -> None:
+        if state._call_end_handled or state._graceful_closing:
+            return
+        if not (
+            _is_gemini_session_gone(ev)
+            or _is_gemini_session_gone(getattr(ev, "error", None))
+        ):
+            return
+        logger.warning(
+            "[%s] Gemini error — hanging up instead of reconnecting",
+            state.room_name,
+        )
+        asyncio.create_task(
+            _complete_call_shutdown(
+                state, hangup_now=True, reason="gemini_session_ended"
+            )
+        )
+
+
 async def hangup_call(*, delay_seconds: float = 0.4):
     ctx = get_job_context()
     if ctx is None:
@@ -2297,7 +2495,10 @@ async def hangup_call(*, delay_seconds: float = 0.4):
     try:
         if delay_seconds > 0:
             await asyncio.sleep(delay_seconds)
-        await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
+        await asyncio.wait_for(
+            ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name)),
+            timeout=SESSION_CLOSE_TIMEOUT,
+        )
         logger.info("✅ Room deleted — call hung up")
     except Exception as e:
         if "not exist" in str(e).lower():
@@ -2784,16 +2985,54 @@ def end_call_allowed(state: CallState) -> tuple[bool, str]:
     return False, "no clear goodbye or decline yet — keep talking"
 
 
+async def _aclose_with_timeout(
+    closable, *, timeout: float, label: str, room_name: str
+) -> None:
+    if closable is None:
+        return
+    try:
+        await asyncio.wait_for(closable.aclose(), timeout=timeout)
+        logger.info(f"[{room_name}] {label} closed")
+    except asyncio.TimeoutError:
+        logger.warning(f"[{room_name}] {label} close timed out ({timeout:.1f}s)")
+    except Exception as e:
+        logger.warning(f"[{room_name}] {label} close: {e}")
+
+
 async def _close_agent_session(state: CallState) -> None:
     session = state.session
     if session is None:
         return
     state.session = None
-    try:
-        await session.aclose()
-        logger.info(f"[{state.room_name}] Agent session closed")
-    except Exception as e:
-        logger.warning(f"[{state.room_name}] Agent session close: {e}")
+    await _aclose_with_timeout(
+        session,
+        timeout=SESSION_CLOSE_TIMEOUT,
+        label="Agent session",
+        room_name=state.room_name,
+    )
+
+
+async def _close_background_audio(state: CallState) -> None:
+    player = getattr(state, "_background_audio", None)
+    if player is None:
+        return
+    state._background_audio = None
+    await _aclose_with_timeout(
+        player,
+        timeout=SESSION_CLOSE_TIMEOUT,
+        label="Background audio",
+        room_name=state.room_name,
+    )
+
+
+def _detach_recording_listeners(state: CallState) -> None:
+    handlers = getattr(state, "_egress_room_handlers", None) or []
+    state._egress_room_handlers = []
+    for room, event, handler in handlers:
+        try:
+            room.off(event, handler)
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2890,11 +3129,15 @@ async def _greet_prospect(session: AgentSession, state: CallState) -> None:
         await asyncio.sleep(0.8)
         if state._call_end_handled:
             return
-        logger.info("[%s] Starting CALL_FLOW opening with generate_reply", state.room_name)
+        logger.info(
+            "[%s] Starting CALL_FLOW opening with generate_reply", state.room_name
+        )
         try:
             session.generate_reply(instructions=_OPENING_REPLY)
         except Exception as exc:
-            logger.warning("[%s] Opening generate_reply failed: %s", state.room_name, exc)
+            logger.warning(
+                "[%s] Opening generate_reply failed: %s", state.room_name, exc
+            )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -3007,6 +3250,101 @@ async def _wait_for_sip_participant(ctx: JobContext, timeout: float) -> Optional
         return _sip_participant_identity(ctx)
 
 
+async def _start_background_audio(
+    room, session: AgentSession, state: CallState
+) -> None:
+    if (
+        room is None
+        or not BACKGROUND_AUDIO_ENABLED
+        or state._background_audio is not None
+    ):
+        return
+    try:
+        state._background_audio = BackgroundAudioPlayer(
+            ambient_sound=AudioConfig(
+                BuiltinAudioClip.OFFICE_AMBIENCE,
+                volume=BACKGROUND_AUDIO_VOLUME,
+            ),
+        )
+        await state._background_audio.start(room=room, agent_session=session)
+        logger.info(
+            f"[{state.room_name}] 🔊 Background audio started (volume={BACKGROUND_AUDIO_VOLUME})"
+        )
+    except Exception as bg_err:
+        logger.warning(
+            f"[{state.room_name}] Background audio failed — call continues: {bg_err}"
+        )
+        state._background_audio = None
+
+
+async def _mark_prospect_answered(state: CallState, *, source: str) -> None:
+    if state.connected:
+        return
+    state.connected = True
+    state.connected_at = datetime.datetime.now(datetime.timezone.utc)
+    logger.info(f"[{state.room_name}] Prospect answered ({source})")
+    asyncio.create_task(
+        send_webhook({"event": "call_connected", **state.webhook_base()})
+    )
+
+
+def _sip_participant_by_identity(ctx: JobContext, identity: str):
+    for participant in ctx.room.remote_participants.values():
+        if getattr(participant, "identity", "") == identity:
+            return participant
+    return None
+
+
+async def _wait_for_sip_answer(ctx: JobContext, timeout: float):
+    """Wait until sip.callStatus becomes active. Participant join is not pickup."""
+    for participant in ctx.room.remote_participants.values():
+        if _is_sip_callee_participant(participant) and sip_call_is_answered(
+            participant
+        ):
+            return participant
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+
+    def _maybe_complete(participant) -> None:
+        if fut.done() or participant is None:
+            return
+        if not _is_sip_callee_participant(participant):
+            return
+        status = sip_call_status(participant)
+        if status:
+            logger.info(
+                f"[{ctx.room.name}] SIP callStatus={status} identity={participant.identity}"
+            )
+        if sip_call_is_answered(participant):
+            fut.set_result(participant)
+
+    def _on_connected(participant: rtc.RemoteParticipant):
+        _maybe_complete(participant)
+
+    def _on_attrs(*args):
+        participant = args[1] if len(args) >= 2 else (args[0] if args else None)
+        _maybe_complete(participant)
+
+    ctx.room.on("participant_connected", _on_connected)
+    ctx.room.on("participant_attributes_changed", _on_attrs)
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        for participant in ctx.room.remote_participants.values():
+            if _is_sip_callee_participant(participant) and sip_call_is_answered(
+                participant
+            ):
+                return participant
+        return None
+    finally:
+        try:
+            ctx.room.off("participant_connected", _on_connected)
+            ctx.room.off("participant_attributes_changed", _on_attrs)
+        except Exception:
+            pass
+
+
 async def _maybe_greet_on_sip_join(
     session: AgentSession,
     state: CallState,
@@ -3016,14 +3354,26 @@ async def _maybe_greet_on_sip_join(
         return
     if not _is_sip_callee_participant(participant):
         return
-    await asyncio.sleep(0.5)
+    if not sip_call_is_answered(participant):
+        logger.info(
+            f"[{state.room_name}] SIP joined but not answered yet "
+            f"(callStatus={sip_call_status(participant) or 'unknown'})"
+        )
+        return
+    await _mark_prospect_answered(state, source=f"sip {sip_call_status(participant)}")
+    try:
+        room = get_job_context().room
+    except Exception:
+        room = getattr(session, "room", None)
+    if room is not None:
+        await _start_background_audio(room, session, state)
     await _greet_prospect(session, state)
 
 
 async def _run_outbound_call_setup(
     ctx: JobContext, session: AgentSession, state: CallState
 ) -> None:
-    """SIP join already confirmed before session creation — just greet."""
+    """Wait for a real pickup before greeting or sending call_connected."""
     try:
         sip_identity = await _wait_for_sip_participant(ctx, SIP_JOIN_TIMEOUT)
         remotes = [
@@ -3031,7 +3381,7 @@ async def _run_outbound_call_setup(
         ]
         if not sip_identity and not should_end_as_no_answer(remotes):
             logger.info(
-                f"[{state.room_name}] SIP identity not matched but remotes present {remotes} — not no-answer"
+                f"[{state.room_name}] SIP identity not matched but remotes present {remotes} — waiting for answer"
             )
             sip_identity = remotes[0]
         if not sip_identity:
@@ -3043,13 +3393,29 @@ async def _run_outbound_call_setup(
             )
             return
 
-        logger.info(f"[{state.room_name}] SIP participant joined: {sip_identity}")
-        if not state.connected:
-            state.connected = True
-            state.connected_at = datetime.datetime.now(datetime.timezone.utc)
-            asyncio.create_task(
-                send_webhook({"event": "call_connected", **state.webhook_base()})
+        participant = _sip_participant_by_identity(ctx, sip_identity)
+        status = sip_call_status(participant) if participant is not None else ""
+        logger.info(
+            f"[{state.room_name}] SIP participant joined: {sip_identity} "
+            f"callStatus={status or 'unknown'} — waiting for pickup"
+        )
+        if participant is None or not sip_call_is_answered(participant):
+            participant = await _wait_for_sip_answer(ctx, SIP_ANSWER_TIMEOUT)
+        if participant is None or not sip_call_is_answered(participant):
+            if state.connected:
+                return
+            logger.info(
+                f"[{state.room_name}] No SIP answer within {SIP_ANSWER_TIMEOUT:.0f}s"
             )
+            await _end_call_as_no_answer(
+                state, "Callee did not pick up — SIP never reached active."
+            )
+            return
+
+        await _mark_prospect_answered(
+            state, source=f"sip {sip_call_status(participant)}"
+        )
+        await _start_background_audio(ctx.room, session, state)
         await _greet_prospect(session, state)
         if VOICEMAIL_DETECTION_ENABLED:
             logger.info(
@@ -3075,6 +3441,8 @@ def _agent_load(agent_server: AgentServer) -> float:
     """Job-count load so the worker accepts up to AGENT_MAX_CONCURRENT_JOBS (not only CPU%)."""
     return min(len(agent_server.active_jobs) / float(AGENT_MAX_CONCURRENT_JOBS), 1.0)
 
+
+_install_gemini_goaway_hangup()
 
 server = AgentServer(
     job_executor_type=(
@@ -3236,6 +3604,7 @@ async def entrypoint(ctx: JobContext):
                     vertexai=True,
                     project=GOOGLE_CLOUD_PROJECT,
                     location=GOOGLE_CLOUD_LOCATION,
+                    conn_options=APIConnectOptions(max_retry=1),
                     input_audio_transcription=genai_types.AudioTranscriptionConfig(),
                     output_audio_transcription=genai_types.AudioTranscriptionConfig(),
                     instructions="""
@@ -3309,12 +3678,15 @@ async def entrypoint(ctx: JobContext):
 
             agent = LumiverseSalesAgent(state=state)
             await setup_rag(session)
+            _attach_session_lifecycle_handlers(session, state)
 
             await session.start(
                 agent=agent,
                 room=ctx.room,
                 room_options=room_io.RoomOptions(
-                    delete_room_on_close=True,
+                    # Default is False — delete the room ourselves after call_ended.
+                    # See https://docs.livekit.io/agents/build/sessions/
+                    delete_room_on_close=False,
                     audio_input=room_io.AudioInputOptions(
                         pre_connect_audio=True,
                         pre_connect_audio_timeout=3.0,
@@ -3323,36 +3695,16 @@ async def entrypoint(ctx: JobContext):
                 ),
             )
 
-            if BACKGROUND_AUDIO_ENABLED:
-                try:
-                    if state._background_audio is not None:
-                        await state._background_audio.aclose()
-                    state._background_audio = BackgroundAudioPlayer(
-                        ambient_sound=AudioConfig(
-                            BuiltinAudioClip.OFFICE_AMBIENCE,
-                            volume=BACKGROUND_AUDIO_VOLUME,
-                        ),
-                    )
-                    await state._background_audio.start(
-                        room=ctx.room, agent_session=session
-                    )
-                    logger.info(
-                        f"[{state.room_name}] 🔊 Background audio started (volume={BACKGROUND_AUDIO_VOLUME})"
-                    )
-                except Exception as bg_err:
-                    logger.warning(
-                        f"[{state.room_name}] Background audio failed — call continues: {bg_err}"
-                    )
-                    state._background_audio = None
+            if BACKGROUND_AUDIO_ENABLED and state.is_inbound:
+                await _start_background_audio(ctx.room, session, state)
 
             state.session = session
             state._max_duration_task = asyncio.create_task(
                 _enforce_max_call_duration(state, session),
                 name=f"max-duration-{state.room_name[:24]}",
             )
-            if (
-                (state.recording_active or state.recording_needs_fallback)
-                and (state._recording_task is None or state._recording_task.done())
+            if (state.recording_active or state.recording_needs_fallback) and (
+                state._recording_task is None or state._recording_task.done()
             ):
                 state._recording_task = asyncio.create_task(
                     _run_recording_fallback(ctx.room, state),
@@ -3379,12 +3731,7 @@ async def entrypoint(ctx: JobContext):
                 except Exception:
                     pass
                 session = None
-            if state._background_audio is not None:
-                try:
-                    await state._background_audio.aclose()
-                except Exception:
-                    pass
-                state._background_audio = None
+            await _close_background_audio(state)
             if attempt < 3:
                 await asyncio.sleep(2**attempt)
             else:
@@ -3410,32 +3757,38 @@ async def entrypoint(ctx: JobContext):
 
     async def _end_call_after_hangup():
         """When callee leaves, finalize call — wait for any in-progress shutdown first."""
-        await asyncio.sleep(3)
-        if state._shutdown_task and not state._shutdown_task.done():
-            await state._shutdown_task
-            disconnected.set()
-            return
-        if state._call_end_handled:
-            disconnected.set()
-            return
-        logger.info(f"[{state.room_name}] Callee left — sending call_ended webhook")
+        await asyncio.sleep(CALLEE_LEAVE_GRACE_SECONDS)
         try:
+            if state._shutdown_task and not state._shutdown_task.done():
+                await state._shutdown_task
+                return
+            if state._call_end_handled:
+                return
+            logger.info(f"[{state.room_name}] Callee left — sending call_ended webhook")
             await _await_call_shutdown(state, state.session)
         except Exception as e:
             logger.error(
                 f"[{state.room_name}] Error ending call after hangup: {e}",
                 exc_info=True,
             )
-        disconnected.set()
+        finally:
+            disconnected.set()
 
     @ctx.room.on("disconnected")
     def on_disconnected(*args):
         logger.info(f"[{state.room_name}] Room disconnected")
 
         async def _release_after_shutdown():
+            # If webhooks already went out, free the entrypoint immediately.
+            if getattr(state, "_call_ended_sent", False) or state._call_end_handled:
+                disconnected.set()
+                return
             if state._shutdown_task and not state._shutdown_task.done():
                 try:
-                    await state._shutdown_task
+                    await asyncio.wait_for(
+                        state._shutdown_task,
+                        timeout=SESSION_CLOSE_TIMEOUT + RECORDING_COOLDOWN_TIMEOUT + 2,
+                    )
                 except Exception as e:
                     logger.error(f"[{state.room_name}] Shutdown task error: {e}")
             disconnected.set()
@@ -3459,41 +3812,48 @@ async def entrypoint(ctx: JobContext):
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
         nonlocal _disconnect_task
-        if any(
-            x in participant.identity.lower()
-            for x in ["caller", "sip", "prospect", "test_"]
-        ):
-            state.callee_hung_up = True
+        if not _is_sip_callee_participant(participant):
+            return
+        if sip_leave_is_no_answer(state):
             logger.info(
-                f"[{state.room_name}] SIP left (user hangup): {participant.identity}"
+                f"[{state.room_name}] SIP left before answer "
+                f"(callStatus={sip_call_status(participant) or 'unknown'}): "
+                f"{participant.identity}"
             )
-            if _disconnect_task is None or _disconnect_task.done():
-                _disconnect_task = asyncio.create_task(_end_call_after_hangup())
+            asyncio.create_task(
+                _end_call_as_no_answer(
+                    state, "Callee never picked up — SIP left while ringing."
+                )
+            )
+            return
+        state.callee_hung_up = True
+        logger.info(
+            f"[{state.room_name}] SIP left (user hangup): {participant.identity}"
+        )
+        if _disconnect_task is None or _disconnect_task.done():
+            _disconnect_task = asyncio.create_task(_end_call_after_hangup())
 
     try:
         await disconnected.wait()
     finally:
         _cancel_max_duration_timer(state)
-        if state._background_audio is not None:
-            try:
-                await state._background_audio.aclose()
-            except Exception:
-                pass
-            state._background_audio = None
+        await _close_background_audio(state)
+        _detach_recording_listeners(state)
         if _disconnect_task and not _disconnect_task.done():
             try:
-                await asyncio.wait_for(_disconnect_task, timeout=30.0)
+                await asyncio.wait_for(_disconnect_task, timeout=5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-        try:
-            await asyncio.wait_for(
-                _await_call_shutdown(state, state.session),
-                timeout=120.0,
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                f"[{state.room_name}] Shutdown timed out — webhooks may be incomplete"
-            )
+                _disconnect_task.cancel()
+        if not getattr(state, "_call_ended_sent", False):
+            try:
+                await asyncio.wait_for(
+                    _await_call_shutdown(state, state.session),
+                    timeout=SESSION_CLOSE_TIMEOUT + RECORDING_COOLDOWN_TIMEOUT + 4,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[{state.room_name}] Shutdown timed out — webhooks may be incomplete"
+                )
         await _close_agent_session(state)
         disconnected.set()
         logger.info(f"[{state.room_name}] Job exiting — call fully processed")
